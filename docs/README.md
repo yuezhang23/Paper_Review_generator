@@ -20,7 +20,7 @@ cd AI_Paper_Reviewer
 
 2. Install dependencies:
 ```bash
-pip install -r requirements_openreview.txt
+pip install -r openreview_mcp/requirements_openreview.txt
 ```
 
 3. Set up environment variables:
@@ -37,7 +37,7 @@ OPENREVIEW_BASEURL=https://api2.openreview.net
 
 Run the test script to search for papers:
 ```bash
-python test_openreview_search.py
+python openreview_mcp/test_openreview_search.py
 ```
 
 This will:
@@ -70,7 +70,7 @@ The MCP server provides the following tools:
     "openreview": {
       "command": "python",
       "args": [
-        "/absolute/path/to/AI_Paper_Reviewer/openreview_mcp.py"
+        "/absolute/path/to/superlinear_ws/openreview_mcp/openreview_mcp.py"
       ],
       "description": "OpenReview MCP Server - Wraps the OpenReview Python SDK"
     }
@@ -83,18 +83,22 @@ The MCP server provides the following tools:
 ## Project Structure
 
 ```
-AI_Paper_Reviewer/
-├── openreview_mcp.py          # Main MCP server implementation
-├── test_openreview_search.py  # Test script for OpenReview API
-├── requirements_openreview.txt # Python dependencies
-├── OPENREVIEW_MCP_README.md   # Detailed MCP setup instructions
-├── README.md                  # This file
-└── .gitignore                 # Git ignore rules
+superlinear_ws/
+├── openreview_mcp/
+│   ├── openreview_mcp.py          # Main MCP server implementation
+│   ├── test_openreview_search.py  # Test script for OpenReview API
+│   ├── requirements_openreview.txt # Python dependencies
+│   └── OPENREVIEW_MCP_README.md   # Detailed MCP setup instructions
+├── docs/
+│   └── README.md                  # This file
+└── .gitignore                     # Git ignore rules
 ```
 
 ## Example: Searching for Papers
 
 ```python
+import sys
+sys.path.append('openreview_mcp')
 from openreview_mcp import get_client
 import openreview
 
