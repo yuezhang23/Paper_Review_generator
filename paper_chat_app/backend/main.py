@@ -8,7 +8,9 @@ import json
 import uuid
 import io
 import re
-from typing import Optional, List, Dict, Any
+import csv
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -33,6 +35,18 @@ from google_pse_service import (
     format_search_results_for_context,
     is_search_needed,
     find_related_documents
+)
+from utils import (
+    UPLOAD_DIR,
+    SUMMARY_LOGS_DIR,
+    SUMMARY_CSV_PATH,
+    PROMPTS_DIR,
+    file_storage,
+    load_prompt_template,
+    PAPER_ANALYSIS_SYSTEM_PROMPT,
+    PAPER_SUMMARY_TEMPLATE,
+    RATING_SCORES,
+    PAPER_QUERY_SUGGESTIONS
 )
 
 # Load environment variables
@@ -66,12 +80,7 @@ def get_ai_client() -> openai.OpenAI:
         )
     return client
 
-# File storage directory
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# In-memory file storage (for demo - use proper storage in production)
-file_storage: Dict[str, Dict[str, Any]] = {}
+# Constants and utilities are imported from utils module
 
 # Request/Response models
 class ChatMessage(BaseModel):
@@ -85,7 +94,6 @@ class ChatRequest(BaseModel):
     paper_context: Optional[Dict[str, Any]] = None
     use_openreview: Optional[bool] = False
     file_ids: Optional[List[str]] = None
-    selected_paper_id: Optional[str] = None  # For user-selected paper when multiple are found
     use_google_pse: Optional[bool] = True  # Enable Google PSE search for non-supermind models
 
 class PaperSearchRequest(BaseModel):
@@ -113,38 +121,7 @@ class PaperContext(BaseModel):
     reviews: Optional[List[Dict[str, Any]]] = None
     metadata: Dict[str, Any]
 
-# System prompt for paper analysis
-PAPER_ANALYSIS_SYSTEM_PROMPT = """You are an expert academic paper analysis assistant specializing in machine learning and AI research papers. 
-
-Your role is to:
-1. Provide detailed, comprehensive summaries of academic papers
-2. Analyze methodology, contributions, and experimental results
-3. Explain technical concepts clearly
-4. Compare papers when relevant
-5. Answer questions about paper content, authors, and related work
-
-When analyzing papers:
-- Focus on key contributions and innovations
-- Explain the methodology in accessible terms
-- Highlight experimental results and their significance
-- Discuss limitations and future work
-- Reference specific sections when possible
-
-Be thorough, accurate, and helpful. Use the provided paper context (metadata, reviews, etc.) to enhance your analysis."""
-
-# Paper-related query suggestions
-PAPER_QUERY_SUGGESTIONS = [
-    "Summarize the main contributions of this paper",
-    "What is the methodology used in this paper?",
-    "Explain the experimental results",
-    "What are the limitations of this work?",
-    "Compare this paper with similar works",
-    "What datasets were used?",
-    "What are the key findings?",
-    "Explain the technical approach in simple terms",
-    "What future work is suggested?",
-    "Who are the authors and their affiliations?"
-]
+# Constants are imported from utils module
 
 @app.get("/")
 async def root():
@@ -428,7 +405,7 @@ def find_best_matching_paper(query: str, search_results: List[Dict[str, Any]]) -
     """
     if not search_results:
         return None
-    
+
     query_lower = query.lower()
     query_words = set(query_lower.split())
     
@@ -563,7 +540,7 @@ async def get_paper_context(request: PaperIdRequest):
         raise HTTPException(status_code=500, detail=f"Error fetching paper context: {str(e)}")
 
 
-def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]] = None, downloaded_papers: List[Dict[str, Any]] = None, google_pse_results: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]] = None, downloaded_papers: List[Dict[str, Any]] = None, google_pse_results: Optional[Dict[str, Any]] = None, is_summary_query: bool = False) -> List[Dict[str, Any]]:
     """Build messages list with system prompt and paper context"""
     messages = []
     
@@ -573,6 +550,13 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
         "content": PAPER_ANALYSIS_SYSTEM_PROMPT
     })
     
+    # If this is a summary query, add the summary template
+    if is_summary_query:
+        messages.append({
+            "role": "system",
+            "content": PAPER_SUMMARY_TEMPLATE
+        })
+    
     # Add Google PSE search results if available (before other context)
     if google_pse_results and google_pse_results.get("results"):
         search_context = format_search_results_for_context(google_pse_results)
@@ -580,7 +564,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             messages.append({
                 "role": "system",
                 "content": search_context
-            })
+    })
     
     # Add uploaded files context if available
     if request.file_ids and len(request.file_ids) > 0:
@@ -610,7 +594,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             context_text += f"Paper {i}:\n"
             context_text += f"Title: {paper.get('title', 'N/A')}\n"
             context_text += f"Paper ID: {paper.get('paper_id', 'N/A')}\n"
-            context_text += f"Authors: {', '.join(paper.get('authors', []))}\n"
+            context_text += f"Authors: {", ".join(paper.get('authors', []))}\n"
             context_text += f"Venue: {paper.get('venue', 'N/A')}\n"
             context_text += f"Abstract: {paper.get('abstract', 'N/A')[:500]}...\n\n"
             
@@ -627,7 +611,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             if paper.get('reviews_text'):
                 context_text += f"Reviews:\n{paper['reviews_text']}\n"
             elif paper.get('reviews'):
-                context_text += f"Reviews ({len(paper['reviews'])}):\n"
+                context_text += f"Reviews ({len(paper['reviews'])})}:\n"
                 for j, review in enumerate(paper['reviews'], 1):
                     context_text += f"  Review {j} (Rating: {review.get('rating', 'N/A')}):\n"
                     context_text += f"  {review.get('summary', '')[:500]}...\n\n"
@@ -647,7 +631,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
         for i, paper in enumerate(openreview_papers, 1):
             context_text += f"Paper {i}:\n"
             context_text += f"Title: {paper.get('title', 'N/A')}\n"
-            context_text += f"Authors: {', '.join(paper.get('authors', []))}\n"
+            context_text += f"Authors: {", ".join(paper.get('authors', []))}\n"
             context_text += f"Abstract: {paper.get('abstract', 'N/A')[:500]}...\n"
             context_text += f"Venue: {paper.get('venue', 'N/A')}\n"
             if paper.get('pdf_url'):
@@ -655,7 +639,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             if paper.get('review_url'):
                 context_text += f"Review Page: {paper.get('review_url')}\n"
             if paper.get('reviews'):
-                context_text += f"Reviews ({len(paper['reviews'])}):\n"
+                context_text += f"Reviews ({len(paper['reviews'])})}:\n"
                 for j, review in enumerate(paper['reviews'], 1):
                     context_text += f"  Review {j}: {review.get('summary', '')[:300]}...\n"
             context_text += "\n"
@@ -671,13 +655,13 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
     if request.paper_context:
         context_text = f"""Paper Context:
 Title: {request.paper_context.get('title', 'N/A')}
-Authors: {', '.join(request.paper_context.get('authors', []))}
+Authors: {", ".join(request.paper_context.get('authors', []))}
 Abstract: {request.paper_context.get('abstract', 'N/A')}
 Venue: {request.paper_context.get('venue', 'N/A')}
 
 """
         if request.paper_context.get('reviews'):
-            context_text += f"Official Reviews ({len(request.paper_context['reviews'])}):\n"
+            context_text += f"Official Reviews ({len(request.paper_context['reviews'])})}:\n"
             for i, review in enumerate(request.paper_context['reviews'][:3], 1):
                 review_content = review.get('content', {})
                 if isinstance(review_content, dict):
@@ -698,6 +682,159 @@ Venue: {request.paper_context.get('venue', 'N/A')}
     
     return messages
 
+async def check_query_clarity(query: str, paper_context_available: bool, model: str = "grok-4-fast") -> Tuple[bool, Optional[str]]:
+    """Check if the query is clear enough to proceed, or if clarification is needed.
+    
+    Args:
+        query: The user's query
+        paper_context_available: Whether paper context is available
+        model: Model to use for checking
+    
+    Returns:
+        tuple: (is_clear: bool, clarification_question: Optional[str])
+        If is_clear is False, clarification_question contains the question to ask the user
+    """
+    try:
+        ai_client = get_ai_client()
+        
+        context_note = "Paper context is available." if paper_context_available else "No paper context is currently available."
+        
+        # Load clarity check template and format it
+        clarity_template = load_prompt_template("query_clarity_check_template.md")
+        clarity_prompt = clarity_template.format(context_note=context_note, query=query)
+
+        response = ai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that evaluates query clarity. Always respond with valid JSON only."},
+                {"role": "user", "content": clarity_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        try:
+            # Remove markdown code blocks if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+            
+            result = json.loads(result_text)
+            is_clear = result.get("is_clear", True)
+            clarification_question = result.get("clarification_question")
+            
+            print(f"[Query Clarity] is_clear: {is_clear}, clarification: {clarification_question}")
+            return is_clear, clarification_question
+        except json.JSONDecodeError:
+            print(f"[Query Clarity] Failed to parse response, assuming query is clear")
+            return True, None
+    except Exception as e:
+        print(f"[Query Clarity] Error: {str(e)}, assuming query is clear")
+        return True, None
+
+def is_summary_query(query: str) -> bool:
+    """Check if the query is asking for a paper summary/analysis."""
+    query_lower = query.lower()
+    summary_keywords = [
+        'summarize', 'summary', 'overview', 'tell me about', 'what is this paper',
+        'analyze', 'analysis', 'explain this paper', 'describe', 'what are', 'how does',
+        'review', 'evaluate', 'assess', 'critique', 'rate', 'rating', 'score'
+    ]
+    return any(keyword in query_lower for keyword in summary_keywords)
+
+def extract_augmented_prompt_from_messages(messages: List[Dict[str, Any]]) -> str:
+    """Extract the augmented part of the prompt (system messages with paper context)"""
+    augmented_parts = []
+    for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content", "")
+            # Only include paper-related context, not the base system prompt
+            if "OPENREVIEW PAPERS" in content or "RETRIEVED PAPERS" in content or "BEST MATCHING PAPER" in content or "UPLOADED FILES" in content or "GOOGLE PSE" in content:
+                augmented_parts.append(content)
+    return "\n\n".join(augmented_parts)
+
+def log_paper_summary(paper_metadata: Dict[str, Any], augmented_prompt: str, analysis: str):
+    """Log paper summary to CSV file with 3 columns: paper_metadata, augmented_prompt, analysis"""
+    try:
+        # Check if CSV file exists, if not create with headers
+        file_exists = os.path.exists(SUMMARY_CSV_PATH)
+        
+        with open(SUMMARY_CSV_PATH, 'a', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['paper_metadata', 'augmented_prompt', 'analysis']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+            
+            if not file_exists:
+                writer.writeheader()
+            
+            # Prepare metadata as JSON string
+            metadata_json = json.dumps(paper_metadata, ensure_ascii=False)
+            
+            # Python's csv module will automatically handle escaping quotes and newlines
+            writer.writerow({
+                'paper_metadata': metadata_json,
+                'augmented_prompt': augmented_prompt,
+                'analysis': analysis
+            })
+        
+        print(f"[Summary Log] Saved paper summary to {SUMMARY_CSV_PATH}")
+    except Exception as e:
+        print(f"[Summary Log] Error saving summary: {str(e)}")
+
+async def verify_and_rephrase_paper_query(query: str, model: str = "grok-4-fast") -> Tuple[bool, str]:
+    """Verify if the query is about a paper and rephrase it to better capture the intention.
+    
+    Returns:
+        tuple: (is_about_paper: bool, rephrased_query: str)
+    """
+    try:
+        ai_client = get_ai_client()
+        
+        # Load verification template and format it
+        verification_template = load_prompt_template("paper_query_verification_template.md")
+        verification_prompt = verification_template.format(query=query)
+
+        response = ai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that analyzes queries to determine if they are about academic papers. Always respond with valid JSON only."},
+                {"role": "user", "content": verification_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Try to parse JSON response
+        try:
+            # Remove markdown code blocks if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+            
+            result = json.loads(result_text)
+            is_about_paper = result.get("is_about_paper", False)
+            rephrased_query = result.get("rephrased_query", query)
+            
+            print(f"[OpenReview] Query verification - is_about_paper: {is_about_paper}, rephrased: {rephrased_query[:100]}...")
+            return is_about_paper, rephrased_query
+        except json.JSONDecodeError:
+            print(f"[OpenReview] Failed to parse verification response, defaulting to original query")
+            # If JSON parsing fails, try to extract boolean from text
+            result_lower = result_text.lower()
+            is_about_paper = "true" in result_lower or "is_about_paper" in result_lower and "false" not in result_lower
+            return is_about_paper, query
+    except Exception as e:
+        print(f"[OpenReview] Error in query verification: {str(e)}, defaulting to original query")
+        # On error, assume it might be about a paper and use original query
+        return True, query
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Chat endpoint with paper context and optional OpenReview integration"""
@@ -705,40 +842,41 @@ async def chat(request: ChatRequest):
         openreview_papers = []
         downloaded_papers = []
         
-        # If OpenReview is enabled and model is not supermind-agent, parse and fetch papers
+        # If OpenReview is enabled and model is not supermind-agent, use it as additional search tool
         if request.use_openreview and request.model != "supermind-agent-v1":
             print(f"[OpenReview] Processing enabled for model: {request.model}")
             # Extract query from the last user message
             user_messages = [msg for msg in request.messages if msg.role == "user"]
             if user_messages:
-                query = user_messages[-1].content
-                print(f"[OpenReview] Parsing query: {query[:100]}...")
+                original_query = user_messages[-1].content
+                print(f"[OpenReview] Original query: {original_query[:100]}...")
                 
-                # Parse OpenReview URLs/IDs and titles from the prompt
-                parsed_info = parse_openreview_info_from_text(query)
-                paper_ids = parsed_info['paper_ids']
-                titles = parsed_info['titles']
+                # Verify if query is about a paper and rephrase if needed
+                is_about_paper, rephrased_query = await verify_and_rephrase_paper_query(
+                    original_query, 
+                    model=request.model or "grok-4-fast"
+                )
                 
-                print(f"[OpenReview] Found {len(paper_ids)} paper IDs and {len(titles)} titles")
-                
-                # If a specific paper was selected by user, only process that one
-                # If "none" is selected, skip OpenReview augmentation entirely
-                if request.selected_paper_id:
-                    if request.selected_paper_id == 'none':
-                        print(f"[OpenReview] User selected 'none' - skipping OpenReview augmentation")
-                        downloaded_papers = []
-                        openreview_papers = []
-                    else:
-                        print(f"[OpenReview] User selected paper: {request.selected_paper_id}")
-                        paper_data = await fetch_and_save_openreview_paper(request.selected_paper_id)
-                        if paper_data:
-                            downloaded_papers.append(paper_data)
-                            print(f"[OpenReview] Successfully downloaded selected paper: {paper_data.get('title', request.selected_paper_id)}")
+                if not is_about_paper:
+                    print(f"[OpenReview] Query is not about a paper, skipping OpenReview API call")
+                    downloaded_papers = []
+                    openreview_papers = []
                 else:
-                    # First, fetch papers by IDs/URLs
+                    # Use rephrased query for OpenReview search
+                    query = rephrased_query
+                    print(f"[OpenReview] Using rephrased query: {query[:100]}...")
+                    
+                    # Parse OpenReview URLs/IDs and titles from the rephrased prompt
+                    parsed_info = parse_openreview_info_from_text(query)
+                    paper_ids = parsed_info['paper_ids']
+                    titles = parsed_info['titles']
+                    
+                    print(f"[OpenReview] Found {len(paper_ids)} paper IDs and {len(titles)} titles")
+                    
+                    # Fetch papers by IDs/URLs (limit to top 3)
                     if paper_ids:
-                        print(f"[OpenReview] Fetching papers by IDs: {paper_ids[:5]}")
-                        for paper_id in paper_ids[:5]:  # Limit to 5 papers
+                        print(f"[OpenReview] Fetching papers by IDs: {paper_ids[:3]}")
+                        for paper_id in paper_ids[:3]:
                             print(f"[OpenReview] Downloading paper: {paper_id}")
                             paper_data = await fetch_and_save_openreview_paper(paper_id)
                             if paper_data:
@@ -746,165 +884,61 @@ async def chat(request: ChatRequest):
                                 print(f"[OpenReview] Successfully downloaded paper: {paper_data.get('title', paper_id)}")
                             else:
                                 print(f"[OpenReview] Failed to download paper: {paper_id}")
-                        
-                        # Check if multiple papers were downloaded from IDs - need user selection
-                        if len(downloaded_papers) > 1:
-                            print(f"[OpenReview] Multiple papers found from IDs ({len(downloaded_papers)}), requesting user selection")
-                            papers_for_selection = create_papers_selection_list(downloaded_papers, include_none=True)
-                            
-                            # Count actual papers (excluding "none" option)
-                            actual_paper_count = len(papers_for_selection) - 1 if papers_for_selection else 0
-                            
-                            return {
-                                "requires_selection": True,
-                                "papers": papers_for_selection,
-                                "message": f"I found {actual_paper_count} papers matching your query. Please select the one you'd like to analyze (or choose 'None' to skip OpenReview augmentation):",
-                                "model": request.model or "grok-4-fast"
-                            }
                     
-                    # Then, search and fetch papers by titles
-                    if titles:
+                    # Search and fetch papers by titles (limit to top 2 per title, max 3 titles)
+                    if titles and len(downloaded_papers) < 3:
                         print(f"[OpenReview] Searching papers by titles: {titles[:3]}")
-                        title_search_results = []
-                        for title in titles[:3]:  # Limit to 3 title searches
+                        for title in titles[:3]:
+                            if len(downloaded_papers) >= 3:
+                                break
                             print(f"[OpenReview] Searching for title: {title}")
                             search_results = await search_openreview_by_title(title, limit=2)
                             print(f"[OpenReview] Found {len(search_results)} papers for title: {title}")
-                            title_search_results.extend(search_results)
-                        
-                        # Check if multiple papers found from title search - need user selection
-                        # Also include already downloaded papers in the selection if we have multiple total
-                        unique_title_results = [p for p in title_search_results if not any(d['paper_id'] == p['id'] for d in downloaded_papers)]
-                        total_papers_count = len(downloaded_papers) + len(unique_title_results)
-                        
-                        if total_papers_count > 1:
-                            print(f"[OpenReview] Multiple papers found ({total_papers_count} total: {len(downloaded_papers)} downloaded, {len(unique_title_results)} from title search), requesting user selection")
                             
-                            # Combine downloaded papers and unique title search results
-                            all_papers = downloaded_papers.copy()
-                            for paper in unique_title_results:
-                                # Convert title search result format to match downloaded paper format
-                                all_papers.append({
-                                    'paper_id': paper.get('id', ''),
-                                    'title': paper.get('title', 'N/A'),
-                                    'authors': paper.get('authors', []),
-                                    'abstract': paper.get('abstract', ''),
-                                    'venue': paper.get('venue', ''),
-                                    'year': paper.get('year'),
-                                    'forum_id': paper.get('forum_id', paper.get('id', ''))
-                                })
-                            
-                            papers_for_selection = create_papers_selection_list(all_papers, include_none=True)
-                            
-                            if papers_for_selection:
-                                # Count actual papers (excluding "none" option)
-                                actual_paper_count = len(papers_for_selection) - 1
-                                
-                                return {
-                                    "requires_selection": True,
-                                    "papers": papers_for_selection,
-                                    "message": f"I found {actual_paper_count} papers matching your query. Please select the one you'd like to analyze (or choose 'None' to skip OpenReview augmentation):",
-                                    "model": request.model or "grok-4-fast"
-                                }
-                        
-                        # If only one or none, proceed with downloading
-                        for paper in title_search_results:
-                            # Check if we already have this paper
-                            if not any(p['paper_id'] == paper['id'] for p in downloaded_papers):
-                                print(f"[OpenReview] Downloading paper from title search: {paper['id']}")
-                                paper_data = await fetch_and_save_openreview_paper(paper['id'])
-                                if paper_data:
-                                    downloaded_papers.append(paper_data)
-                                    print(f"[OpenReview] Successfully downloaded paper: {paper_data.get('title', paper['id'])}")
+                            for paper in search_results:
+                                if len(downloaded_papers) >= 3:
+                                    break
+                                # Check if we already have this paper
+                                if not any(d['paper_id'] == paper['id'] for d in downloaded_papers):
+                                    print(f"[OpenReview] Downloading paper from title search: {paper['id']}")
+                                    paper_data = await fetch_and_save_openreview_paper(paper['id'])
+                                    if paper_data:
+                                        downloaded_papers.append(paper_data)
+                                        print(f"[OpenReview] Successfully downloaded paper: {paper_data.get('title', paper['id'])}")
                     
-                    # If no specific IDs or titles found, try general search-based retrieval
-                    if not paper_ids and not titles:
+                    # If no specific IDs or titles found, try general search-based retrieval (limit to 3)
+                    if not paper_ids and not titles and len(downloaded_papers) == 0:
                         print(f"[OpenReview] No IDs/titles found, trying general search")
-                        openreview_papers = await retrieve_openreview_papers(query, limit=5)
+                        openreview_papers = await retrieve_openreview_papers(query, limit=3)
                         print(f"[OpenReview] General search found {len(openreview_papers)} papers")
                         
-                        # Check if multiple papers were found - need user selection
-                        if len(openreview_papers) > 1:
-                            print(f"[OpenReview] Multiple papers found ({len(openreview_papers)}), requesting user selection")
-                            # Format papers for selection UI - convert to format expected by helper
-                            papers_for_helper = []
-                            for paper in openreview_papers:
-                                papers_for_helper.append({
-                                    'id': paper.get('id', ''),
-                                    'title': paper.get('title', 'N/A'),
-                                    'authors': paper.get('authors', []),
-                                    'abstract': paper.get('abstract', ''),
-                                    'venue': paper.get('venue', ''),
-                                    'year': paper.get('year'),
-                                    'pdf_url': paper.get('pdf_url', ''),
-                                    'review_url': paper.get('review_url', '')
-                                })
-                            
-                            papers_for_selection = create_papers_selection_list(papers_for_helper, include_none=True)
-                            
-                            # Count actual papers (excluding "none" option)
-                            actual_paper_count = len(papers_for_selection) - 1 if papers_for_selection else 0
-                            
-                            return {
-                                "requires_selection": True,
-                                "papers": papers_for_selection,
-                                "message": f"I found {actual_paper_count} papers matching your query. Please select the one you'd like to analyze (or choose 'None' to skip OpenReview augmentation):",
-                                "model": request.model or "grok-4-fast"
-                            }
-                        elif len(openreview_papers) == 1:
-                            # Only one paper found - download it automatically without user interaction
-                            single_paper_id = openreview_papers[0].get('id', '')
-                            single_paper_title = openreview_papers[0].get('title', 'N/A')
-                            print(f"[OpenReview] Single paper found, downloading automatically: {single_paper_id}")
-                            paper_data = await fetch_and_save_openreview_paper(single_paper_id)
-                            if paper_data:
-                                downloaded_papers.append(paper_data)
-                                openreview_papers = []  # Clear metadata papers since we have downloaded version
-                                print(f"[OpenReview] Successfully downloaded paper: {paper_data.get('title', single_paper_title)}")
-                            else:
-                                # If download fails, keep metadata for fallback
-                                print(f"[OpenReview] Failed to download paper, using metadata only")
+                        # Download top papers automatically (limit to 3)
+                        for paper in openreview_papers[:3]:
+                            paper_id = paper.get('id', '')
+                            if paper_id:
+                                print(f"[OpenReview] Downloading paper from general search: {paper_id}")
+                                paper_data = await fetch_and_save_openreview_paper(paper_id)
+                                if paper_data:
+                                    downloaded_papers.append(paper_data)
+                                    print(f"[OpenReview] Successfully downloaded paper: {paper_data.get('title', paper_id)}")
+                        
+                        # Keep remaining as metadata if not downloaded
+                        openreview_papers = openreview_papers[len(downloaded_papers):]
             
             print(f"[OpenReview] Total downloaded papers: {len(downloaded_papers)}, metadata papers: {len(openreview_papers)}")
-            
-            # Check if we have multiple downloaded papers and need user selection
-            if len(downloaded_papers) > 1 and not request.selected_paper_id:
-                print(f"[OpenReview] Multiple downloaded papers found ({len(downloaded_papers)}), requesting user selection")
-                papers_for_selection = create_papers_selection_list(downloaded_papers, include_none=True)
-                
-                # Count actual papers (excluding "none" option)
-                actual_paper_count = len(papers_for_selection) - 1 if papers_for_selection else 0
-                
-                return {
-                    "requires_selection": True,
-                    "papers": papers_for_selection,
-                    "message": f"I found {actual_paper_count} papers matching your query. Please select the one you'd like to analyze (or choose 'None' to skip OpenReview augmentation):",
-                    "model": request.model or "grok-4-fast"
-                }
         else:
             if request.use_openreview:
                 print(f"[OpenReview] Skipped (model is supermind-agent-v1)")
             else:
                 print(f"[OpenReview] Disabled")
         
-        # If a specific paper was selected, filter to only that paper
-        # If "none" was selected, papers are already cleared above
-        if request.selected_paper_id and request.selected_paper_id != 'none':
-            downloaded_papers = [p for p in downloaded_papers if p.get('paper_id') == request.selected_paper_id]
-            openreview_papers = [p for p in openreview_papers if p.get('id') == request.selected_paper_id]
-        
         # Determine if we should use Google PSE search
-        # Use Google PSE if:
-        # 1. OpenReview is toggled off, OR
-        # 2. OpenReview returned no papers, OR
-        # 3. User selected "none" option
+        # Google PSE is always available when enabled (works alongside OpenReview)
         model = request.model or "grok-4-fast"
         openreview_has_results = len(downloaded_papers) > 0 or len(openreview_papers) > 0
-        user_selected_none = request.selected_paper_id == 'none'
         should_use_google_pse = (
             request.use_google_pse and 
-            model != "supermind-agent-v1" and
-            (not request.use_openreview or not openreview_has_results or user_selected_none)
+            model != "supermind-agent-v1"
         )
         
         google_pse_results = None
@@ -925,20 +959,36 @@ async def chat(request: ChatRequest):
                         use_academic_focus=True
                     )
                     if google_pse_results.get("results"):
-                        print(f"[Google PSE] Found {google_pse_results.get('count', 0)} results")
-                        # Find the best matching paper from Google PSE results
-                        best_matching_paper = find_best_matching_paper(query, google_pse_results.get("results", []))
-                        if best_matching_paper:
-                            print(f"[Google PSE] Best match: {best_matching_paper.get('title', 'N/A')[:60]}...")
-                            
-                            # Find related documents similar to OpenReview's related papers feature
-                            print(f"[Google PSE] Finding related documents...")
-                            try:
-                                related_documents = await find_related_documents(best_matching_paper, num_related=5)
-                                print(f"[Google PSE] Found {len(related_documents)} related documents")
-                            except Exception as e:
-                                print(f"[Google PSE] Error finding related documents: {str(e)}")
-                                related_documents = []
+                        # Filter out OpenReview sources if OpenReview is disabled
+                        results = google_pse_results.get("results", [])
+                        if not request.use_openreview:
+                            print(f"[Google PSE] Filtering out OpenReview sources (OpenReview is disabled)")
+                            filtered_results = [
+                                r for r in results 
+                                if 'openreview.net' not in r.get('link', '').lower() 
+                                and 'openreview.net' not in r.get('display_link', '').lower()
+                            ]
+                            google_pse_results["results"] = filtered_results
+                            google_pse_results["count"] = len(filtered_results)
+                            print(f"[Google PSE] Filtered to {len(filtered_results)} results (removed {len(results) - len(filtered_results)} OpenReview sources)")
+                        
+                        if google_pse_results.get("results"):
+                            print(f"[Google PSE] Found {google_pse_results.get('count', 0)} results")
+                            # Find the best matching paper from Google PSE results
+                            best_matching_paper = find_best_matching_paper(query, google_pse_results.get("results", []))
+                            if best_matching_paper:
+                                print(f"[Google PSE] Best match: {best_matching_paper.get('title', 'N/A')[:60]}...")
+                                
+                                # Find related documents similar to OpenReview's related papers feature
+                                print(f"[Google PSE] Finding related documents...")
+                                try:
+                                    related_documents = await find_related_documents(best_matching_paper, num_related=5)
+                                    print(f"[Google PSE] Found {len(related_documents)} related documents")
+                                except Exception as e:
+                                    print(f"[Google PSE] Error finding related documents: {str(e)}")
+                                    related_documents = []
+                        else:
+                            print(f"[Google PSE] No results after filtering")
                     else:
                         print(f"[Google PSE] No results found or error: {google_pse_results.get('error', 'Unknown')}")
                 except Exception as e:
@@ -961,7 +1011,34 @@ This paper was identified as the best match for your query. Please use this info
         else:
             best_match_context = None
         
-        messages = build_messages(request, openreview_papers, downloaded_papers, google_pse_results)
+        # Check if this is a summary query
+        user_messages = [msg for msg in request.messages if msg.role == "user"]
+        is_summary = False
+        if user_messages:
+            last_query = user_messages[-1].content
+            is_summary = is_summary_query(last_query)
+            print(f"[Summary Detection] Is summary query: {is_summary}")
+        
+        # Check query clarity before proceeding (only if we have paper context)
+        paper_context_available = len(downloaded_papers) > 0 or len(openreview_papers) > 0 or best_matching_paper is not None
+        
+        if paper_context_available and user_messages:
+            last_user_message = user_messages[-1].content
+            is_clear, clarification_question = await check_query_clarity(
+                last_user_message, 
+                paper_context_available,
+                model=model
+            )
+            
+            if not is_clear and clarification_question:
+                print(f"[Query Clarity] Query needs clarification: {clarification_question}")
+                return {
+                    "requires_clarification": True,
+                    "message": clarification_question,
+                    "model": model
+                }
+        
+        messages = build_messages(request, openreview_papers, downloaded_papers, google_pse_results, is_summary_query=is_summary)
         
         # Add best matching paper context if available
         if best_match_context:
@@ -983,6 +1060,45 @@ This paper was identified as the best match for your query. Please use this info
             max_tokens=2000,
             stream=False
         )
+        
+        # Extract analysis response
+        analysis_response = response.choices[0].message.content
+        
+        # Log paper summary if this is a summary query and we have paper context
+        if is_summary and (downloaded_papers or openreview_papers or best_matching_paper):
+            # Get paper metadata
+            paper_metadata = {}
+            if downloaded_papers:
+                paper = downloaded_papers[0]  # Use first paper
+                paper_metadata = {
+                    'paper_id': paper.get('paper_id', ''),
+                    'title': paper.get('title', ''),
+                    'authors': paper.get('authors', []),
+                    'venue': paper.get('venue', ''),
+                    'year': paper.get('year')
+                }
+            elif openreview_papers:
+                paper = openreview_papers[0]
+                paper_metadata = {
+                    'paper_id': paper.get('id', ''),
+                    'title': paper.get('title', ''),
+                    'authors': paper.get('authors', []),
+                    'venue': paper.get('venue', ''),
+                    'year': paper.get('year')
+                }
+            elif best_matching_paper:
+                paper_metadata = {
+                    'title': best_matching_paper.get('title', ''),
+                    'url': best_matching_paper.get('link', ''),
+                    'source': 'google_pse'
+                }
+            
+            # Extract augmented prompt (paper context parts)
+            augmented_prompt = extract_augmented_prompt_from_messages(messages)
+            
+            # Log to CSV
+            if paper_metadata:
+                log_paper_summary(paper_metadata, augmented_prompt, analysis_response)
         
         # Extract PDF links from downloaded and retrieved papers
         # Use a set to track seen paper IDs/URLs to avoid duplicates
@@ -1058,7 +1174,7 @@ This paper was identified as the best match for your query. Please use this info
         all_pdf_links = pdf_links + google_pse_pdf_links
         
         response_data = {
-            "message": response.choices[0].message.content,
+            "message": analysis_response,
             "model": model,
             "usage": {
                 "prompt_tokens": response.usage.prompt_tokens,
@@ -1212,7 +1328,7 @@ async def chat_stream(request: ChatRequest):
             if request.paper_context:
                 context_text = f"""Paper Context:
 Title: {request.paper_context.get('title', 'N/A')}
-Authors: {', '.join(request.paper_context.get('authors', []))}
+Authors: {", ".join(request.paper_context.get('authors', []))}
 Abstract: {request.paper_context.get('abstract', 'N/A')}
 """
                 messages.append({"role": "system", "content": context_text})
@@ -1242,4 +1358,3 @@ Abstract: {request.paper_context.get('abstract', 'N/A')}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
