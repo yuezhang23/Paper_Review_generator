@@ -594,7 +594,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             context_text += f"Paper {i}:\n"
             context_text += f"Title: {paper.get('title', 'N/A')}\n"
             context_text += f"Paper ID: {paper.get('paper_id', 'N/A')}\n"
-            context_text += f"Authors: {", ".join(paper.get('authors', []))}\n"
+            context_text += f"Authors: {', '.join(paper.get('authors', []))}\n"
             context_text += f"Venue: {paper.get('venue', 'N/A')}\n"
             context_text += f"Abstract: {paper.get('abstract', 'N/A')[:500]}...\n\n"
             
@@ -611,7 +611,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             if paper.get('reviews_text'):
                 context_text += f"Reviews:\n{paper['reviews_text']}\n"
             elif paper.get('reviews'):
-                context_text += f"Reviews ({len(paper['reviews'])})}:\n"
+                context_text += f"Reviews ({len(paper['reviews'])}):\n"
                 for j, review in enumerate(paper['reviews'], 1):
                     context_text += f"  Review {j} (Rating: {review.get('rating', 'N/A')}):\n"
                     context_text += f"  {review.get('summary', '')[:500]}...\n\n"
@@ -631,7 +631,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
         for i, paper in enumerate(openreview_papers, 1):
             context_text += f"Paper {i}:\n"
             context_text += f"Title: {paper.get('title', 'N/A')}\n"
-            context_text += f"Authors: {", ".join(paper.get('authors', []))}\n"
+            context_text += f"Authors: {', '.join(paper.get('authors', []))}\n"
             context_text += f"Abstract: {paper.get('abstract', 'N/A')[:500]}...\n"
             context_text += f"Venue: {paper.get('venue', 'N/A')}\n"
             if paper.get('pdf_url'):
@@ -639,7 +639,7 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
             if paper.get('review_url'):
                 context_text += f"Review Page: {paper.get('review_url')}\n"
             if paper.get('reviews'):
-                context_text += f"Reviews ({len(paper['reviews'])})}:\n"
+                context_text += f"Reviews ({len(paper['reviews'])}):\n"
                 for j, review in enumerate(paper['reviews'], 1):
                     context_text += f"  Review {j}: {review.get('summary', '')[:300]}...\n"
             context_text += "\n"
@@ -655,13 +655,13 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
     if request.paper_context:
         context_text = f"""Paper Context:
 Title: {request.paper_context.get('title', 'N/A')}
-Authors: {", ".join(request.paper_context.get('authors', []))}
+Authors: {', '.join(request.paper_context.get('authors', []))}
 Abstract: {request.paper_context.get('abstract', 'N/A')}
 Venue: {request.paper_context.get('venue', 'N/A')}
 
 """
         if request.paper_context.get('reviews'):
-            context_text += f"Official Reviews ({len(request.paper_context['reviews'])})}:\n"
+            context_text += f"Official Reviews ({len(request.paper_context['reviews'])}):\n"
             for i, review in enumerate(request.paper_context['reviews'][:3], 1):
                 review_content = review.get('content', {})
                 if isinstance(review_content, dict):
@@ -1328,7 +1328,7 @@ async def chat_stream(request: ChatRequest):
             if request.paper_context:
                 context_text = f"""Paper Context:
 Title: {request.paper_context.get('title', 'N/A')}
-Authors: {", ".join(request.paper_context.get('authors', []))}
+Authors: {', '.join(request.paper_context.get('authors', []))}
 Abstract: {request.paper_context.get('abstract', 'N/A')}
 """
                 messages.append({"role": "system", "content": context_text})
@@ -1358,3 +1358,4 @@ Abstract: {request.paper_context.get('abstract', 'N/A')}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
