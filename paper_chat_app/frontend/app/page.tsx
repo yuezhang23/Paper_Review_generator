@@ -20,18 +20,7 @@ interface Message {
   id?: string
   pdf_links?: Array<{ title: string; url: string; review_url?: string }>
   files?: UploadedFile[]
-  requires_selection?: boolean
-  papers?: Array<{
-    id: string
-    title: string
-    authors: string[]
-    abstract: string
-    venue?: string
-    year?: number
-    pdf_url?: string
-    review_url?: string
-  }>
-  selected_paper_id?: string  // Track which paper was selected from this message
+  requires_clarification?: boolean
 }
 
 interface Paper {
@@ -272,44 +261,36 @@ export default function Home() {
         paper_id: currentPaper?.paper_id,
         paper_context: currentPaper,
         use_openreview: useOpenReviewFlag,
-        file_ids: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
-        selected_paper_id: undefined // Will be set when user selects a paper
+        file_ids: uploadedFileIds.length > 0 ? uploadedFileIds : undefined
       })
       
       console.log('Chat response received:', {
         hasPdfLinks: !!response.data.pdf_links,
-        pdfLinksCount: response.data.pdf_links?.length || 0,
-        requiresSelection: response.data.requires_selection,
-        papersCount: response.data.papers?.length || 0,
-        papers: response.data.papers
+        pdfLinksCount: response.data.pdf_links?.length || 0
       })
 
-      // Check if paper selection is required
-      let assistantMessage: Message
-      if (response.data.requires_selection && response.data.papers) {
-        console.log('Creating message with paper selection:', {
-          papersCount: response.data.papers.length,
-          papers: response.data.papers
-        })
-        assistantMessage = {
+      // Check if clarification is required
+      if (response.data.requires_clarification) {
+        const clarificationMessage: Message = {
           role: 'assistant',
           content: response.data.message,
           timestamp: new Date(),
           id: `msg-${Date.now()}`,
-          requires_selection: true,
-          papers: response.data.papers
+          requires_clarification: true
         }
-        setMessages(prev => [...prev, assistantMessage])
-      } else {
-        assistantMessage = {
-          role: 'assistant',
-          content: response.data.message,
-          timestamp: new Date(),
-          id: `msg-${Date.now()}`,
-          pdf_links: response.data.pdf_links || undefined
-        }
-        setMessages(prev => [...prev, assistantMessage])
+        setMessages(prev => [...prev, clarificationMessage])
+        return
       }
+
+      // Create assistant message
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: response.data.message,
+        timestamp: new Date(),
+        id: `msg-${Date.now()}`,
+        pdf_links: response.data.pdf_links || undefined
+      }
+      setMessages(prev => [...prev, assistantMessage])
       
       // Update conversation
       if (activeConversation) {
@@ -347,155 +328,6 @@ export default function Home() {
   const cancelEdit = () => {
     setEditingMessageId(null)
     setInput('')
-  }
-
-  const handlePaperSelection = async (paperId: string, messageId: string) => {
-    // Find the message that requires selection
-    const selectionMessage = messages.find(m => m.id === messageId && m.requires_selection)
-    if (!selectionMessage) return
-
-    // Find the index of this message
-    const messageIndex = messages.findIndex(m => m.id === messageId)
-    if (messageIndex === -1) return
-
-    // Get all messages up to and including the user's original message
-    const messagesToSend = messages.slice(0, messageIndex - 1) // Exclude the selection message and the user message
-    const userMessage = messages[messageIndex - 1] // The user message that triggered the search
-    
-    if (!userMessage || userMessage.role !== 'user') return
-
-    // If a paper is re-picked (even if same paper), remove ALL messages after the selection message
-    // This allows users to abort current prompt and start fresh
-    const isRepicking = !!selectionMessage.selected_paper_id
-
-    // Add loading message
-    setIsLoading(true)
-    
-    try {
-      // Resend the request with selected paper ID
-      const response = await axios.post(`${API_BASE_URL}/api/chat`, {
-        messages: [...messagesToSend, userMessage].map(m => ({ role: m.role, content: m.content })),
-        model: selectedModel,
-        paper_id: currentPaper?.paper_id,
-        paper_context: currentPaper,
-        use_openreview: useOpenReview && selectedModel !== 'supermind-agent-v1',
-        file_ids: undefined,
-        selected_paper_id: paperId
-      })
-
-      // Update messages: keep selection message, mark selected paper, add/update response
-      setMessages(prev => {
-        let newMessages: Message[]
-        
-        if (isRepicking) {
-          // Remove ALL messages after the selection message to start fresh
-          // This includes any responses, user messages, and subsequent conversation
-          newMessages = prev.slice(0, messageIndex + 1)
-        } else {
-          // First time selecting - just remove any existing response after selection
-          const selectionMsgIndex = prev.findIndex(m => m.id === messageId)
-          if (selectionMsgIndex !== -1) {
-            // Find if there's already a response after this selection
-            const nextMessage = prev[selectionMsgIndex + 1]
-            if (nextMessage && nextMessage.role === 'assistant' && !nextMessage.requires_selection) {
-              // Remove existing response
-              newMessages = [...prev.slice(0, selectionMsgIndex + 1)]
-            } else {
-              // Keep all messages
-              newMessages = [...prev]
-            }
-          } else {
-            newMessages = [...prev]
-          }
-        }
-        
-        // Update selection message with selected paper ID
-        const updatedSelectionMessage: Message = {
-          ...newMessages[messageIndex],
-          selected_paper_id: paperId
-        }
-        newMessages[messageIndex] = updatedSelectionMessage
-        
-        // Add the response
-        const responseMessage: Message = {
-          role: 'assistant',
-          content: response.data.message,
-          timestamp: new Date(),
-          id: `msg-${Date.now()}`,
-          pdf_links: response.data.pdf_links || undefined
-        }
-        
-        // Add response after selection message
-        newMessages.push(responseMessage)
-        
-        return newMessages
-      })
-
-      // Update conversation - messages are already cleared in setMessages above if re-picking
-      if (activeConversation) {
-        setConversations(prev => prev.map(conv => {
-          if (conv.id === activeConversation) {
-            // Build conversation from messages up to user message, plus selection and response
-            const convMessages = [...messagesToSend, userMessage, {
-              ...selectionMessage,
-              selected_paper_id: paperId
-            }, {
-              role: 'assistant' as const,
-              content: response.data.message,
-              timestamp: new Date(),
-              id: `msg-${Date.now()}`,
-              pdf_links: response.data.pdf_links || undefined
-            }]
-            return { ...conv, messages: convMessages }
-          }
-          return conv
-        }))
-      }
-    } catch (error) {
-      console.error('Error selecting paper:', error)
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: 'Sorry, I encountered an error processing your selection. Please try again.',
-        timestamp: new Date(),
-        id: `msg-${Date.now()}`
-      }
-      setMessages(prev => {
-        let newMessages: Message[]
-        
-        // If re-picking a paper (even if same), clear ALL messages after selection
-        const isRepicking = !!selectionMessage.selected_paper_id
-        if (isRepicking) {
-          // Remove ALL messages after the selection message
-          newMessages = prev.slice(0, messageIndex + 1)
-        } else {
-          // First time selecting - remove existing response if any
-          const selectionMsgIndex = prev.findIndex(m => m.id === messageId)
-          if (selectionMsgIndex !== -1) {
-            const nextMessage = prev[selectionMsgIndex + 1]
-            if (nextMessage && nextMessage.role === 'assistant' && !nextMessage.requires_selection) {
-              newMessages = [...prev.slice(0, selectionMsgIndex + 1)]
-            } else {
-              newMessages = [...prev]
-            }
-          } else {
-            newMessages = [...prev]
-          }
-        }
-        
-        // Update selection message
-        newMessages[messageIndex] = {
-          ...newMessages[messageIndex],
-          selected_paper_id: paperId
-        }
-        
-        // Add error message after selection
-        newMessages.push(errorMessage)
-        
-        return newMessages
-      })
-    } finally {
-      setIsLoading(false)
-    }
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -834,104 +666,6 @@ export default function Home() {
                       </div>
                     </div>
                   )}
-                  {message.role === 'assistant' && message.requires_selection && (
-                    <>
-                      {message.content && (
-                        <div className="mb-3 text-sm text-gray-300">
-                          {message.content}
-                        </div>
-                      )}
-                      {message.papers && message.papers.length > 0 ? (
-                        <div className="mb-3 pb-3 border-b border-gray-700">
-                          <div className="text-xs font-semibold text-gray-400 mb-3 flex items-center gap-1.5">
-                            <BookOpen className="w-3 h-3" />
-                            {message.selected_paper_id 
-                              ? 'Select a different paper (or keep current selection):' 
-                              : 'Select a paper:'}
-                          </div>
-                          {message.selected_paper_id && (
-                            <div className="mb-3 p-2 bg-elegant-primary/10 border border-elegant-primary/30 rounded text-xs text-gray-300">
-                              Currently selected: {message.papers.find(p => p.id === message.selected_paper_id)?.title || 'Unknown'}
-                            </div>
-                          )}
-                          <div className="space-y-2">
-                            {message.papers.map((paper, paperIdx) => {
-                              console.log('Rendering paper:', paperIdx, paper)
-                              const isNoneOption = paper.id === 'none'
-                              const isSelected = message.selected_paper_id === paper.id
-                              return (
-                          <button
-                            key={paper.id || paperIdx}
-                            onClick={() => handlePaperSelection(paper.id, messageId)}
-                            disabled={isLoading}
-                            className={`w-full text-left p-3 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
-                              isSelected
-                                ? 'bg-elegant-primary/20 border-2 border-elegant-primary'
-                                : isNoneOption 
-                                  ? 'bg-gray-700 hover:bg-gray-600 border-2 border-dashed border-gray-500 hover:border-gray-400' 
-                                  : 'bg-gray-800 hover:bg-gray-700 border border-gray-600 hover:border-elegant-primary/40'
-                            }`}
-                          >
-                            <div className="flex items-start gap-2 mb-2">
-                              <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold ${
-                                isSelected
-                                  ? 'bg-elegant-primary'
-                                  : isNoneOption 
-                                    ? 'bg-gray-600' 
-                                    : 'bg-gradient-to-br from-elegant-primary to-elegant-secondary'
-                              }`}>
-                                {isSelected ? '✓' : isNoneOption ? '0' : paperIdx}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className={`font-semibold text-sm mb-1 ${
-                                  isNoneOption ? 'text-gray-300 italic' : 'text-gray-200'
-                                }`}>
-                                  {paper.title}
-                                </div>
-                                {!isNoneOption && (
-                                  <>
-                                    <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                                      {paper.authors && paper.authors.length > 0 && (
-                                        <span className="flex items-center gap-1">
-                                          <span className="font-medium">Authors:</span>
-                                          <span>{paper.authors.join(', ')}</span>
-                                        </span>
-                                      )}
-                                      {paper.year && (
-                                        <span className="flex items-center gap-1">
-                                          <span className="font-medium">Year:</span>
-                                          <span>{paper.year}</span>
-                                        </span>
-                                      )}
-                                      {paper.venue && (
-                                        <span className="flex items-center gap-1">
-                                          <span className="font-medium">Conference:</span>
-                                          <span>{paper.venue}</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                    {/* {paper.abstract && (
-                                      <div className="text-xs text-gray-400 line-clamp-2 mt-2">{paper.abstract}</div>
-                                    )} */}
-                                  </>
-                                )}
-                                {/* {isNoneOption && paper.abstract && (
-                                  <div className="text-xs text-gray-400 mt-2">{paper.abstract}</div>
-                                )} */}
-                              </div>
-                            </div>
-                          </button>
-                          )
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mb-3 text-xs text-gray-400">
-                          No papers available for selection.
-                        </div>
-                      )}
-                    </>
-                  )}
                   {message.role === 'assistant' && message.pdf_links && message.pdf_links.length > 0 && (
                     <div className="mb-3 pb-3 border-b border-gray-700">
                       <div className="text-[10px] font-semibold text-gray-400 mb-1.5 flex items-center gap-1.5">
@@ -966,7 +700,16 @@ export default function Home() {
                       </div>
                     </div>
                   )}
-                  {!(message.role === 'assistant' && message.requires_selection && message.papers && message.papers.length > 0) && (
+                  {message.role === 'assistant' && message.requires_clarification && (
+                    <div className="mb-3 p-3 bg-yellow-900/20 border border-yellow-700/40 rounded-lg">
+                      <div className="text-xs font-semibold text-yellow-400 mb-2 flex items-center gap-1.5">
+                        <MessageSquare className="w-3 h-3" />
+                        Clarification Needed
+                      </div>
+                      <div className="text-sm text-gray-200 whitespace-pre-wrap">{message.content}</div>
+                    </div>
+                  )}
+                  {!(message.role === 'assistant' && message.requires_clarification) && (
                     <div className="whitespace-pre-wrap leading-relaxed text-sm">{contentWithoutModel}</div>
                   )}
                   <div className={`text-[10px] mt-2 ${
