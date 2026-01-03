@@ -142,3 +142,4 @@ The Paper Chat Application now supports:
 - Multiple models increase response time but provide better insights
 - All models use the same paper context when available
 
+
