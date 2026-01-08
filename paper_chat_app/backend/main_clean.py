@@ -235,6 +235,10 @@ async def get_paper_reviews(request: PaperReviewRequest):
             detail=f"Error fetching paper reviews: {str(e)}"
         )
 
+
+class PaperIdRequest(BaseModel):
+    paper_id: str
+
 @app.post("/api/upload-files")
 async def upload_files_endpoint(files: List[UploadFile] = FastAPIFile(...)):
     """Upload files and extract text content"""

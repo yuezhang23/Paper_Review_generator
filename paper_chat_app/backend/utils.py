@@ -3,6 +3,8 @@ Utility module containing constants and helper functions for the paper analysis 
 """
 
 import os
+import json
+import csv
 from typing import Dict, Any
 
 # File storage directory
@@ -36,9 +38,37 @@ def load_prompt_template(filename: str) -> str:
         print(f"Error loading prompt template {filename}: {str(e)}")
         return ""
 
+def log_paper_summary(paper_metadata: Dict[str, Any], augmented_prompt: str, analysis: str):
+    """Log paper summary to CSV file with 3 columns: paper_metadata, augmented_prompt, analysis"""
+    try:
+        # Check if CSV file exists, if not create with headers
+        file_exists = os.path.exists(SUMMARY_CSV_PATH)
+        
+        with open(SUMMARY_CSV_PATH, 'a', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['paper_metadata', 'augmented_prompt', 'analysis']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+            
+            if not file_exists:
+                writer.writeheader()
+            
+            # Prepare metadata as JSON string
+            metadata_json = json.dumps(paper_metadata, ensure_ascii=False)
+            
+            # Python's csv module will automatically handle escaping quotes and newlines
+            writer.writerow({
+                'paper_metadata': metadata_json,
+                'augmented_prompt': augmented_prompt,
+                'analysis': analysis
+            })
+        
+        print(f"[Summary Log] Saved paper summary to {SUMMARY_CSV_PATH}")
+    except Exception as e:
+        print(f"[Summary Log] Error saving summary: {str(e)}")
+
 # Load prompt templates
 PAPER_ANALYSIS_SYSTEM_PROMPT = load_prompt_template("paper_analysis_system_prompt.md")
 PAPER_SUMMARY_TEMPLATE = load_prompt_template("paper_summary_template.md")
+PLAGIARISM_ANALYSIS_TEMPLATE = load_prompt_template("plagiarism_analysis_template.md")
 
 # Rating scores for paper evaluation
 RATING_SCORES = {
@@ -67,3 +97,42 @@ PAPER_QUERY_SUGGESTIONS = [
     "What future work is suggested?",
     "Who are the authors and their affiliations?"
 ]
+
+def format_search_results_for_context(search_results: Dict[str, Any]) -> str:
+    """
+    Format AI Builder search results as text context for LLM.
+    Replaces format_search_results_for_context from google_pse_service.
+    
+    Args:
+        search_results: Dictionary from web_search_paper()
+        
+    Returns:
+        Formatted string with search results
+    """
+    if "error" in search_results or not search_results.get("results"):
+        return ""
+    
+    results = search_results["results"]
+    if not results:
+        return ""
+    
+    context_parts = ["=== REAL-TIME WEB SEARCH RESULTS ===\n"]
+    
+    for i, result in enumerate(results, 1):
+        title = result.get("title", "No title")
+        link = result.get("link") or result.get("url", "")
+        snippet = result.get("snippet") or result.get("content", "")
+        display_link = result.get("display_link", "")
+        
+        context_parts.append(f"Result {i}:")
+        context_parts.append(f"Title: {title}")
+        context_parts.append(f"URL: {link}")
+        if display_link:
+            context_parts.append(f"Source: {display_link}")
+        if snippet:
+            context_parts.append(f"Summary: {snippet}")
+        context_parts.append("")
+    
+    context_parts.append("Use the information from these search results to provide accurate, up-to-date answers. Cite sources when referencing specific information.\n")
+    
+    return "\n".join(context_parts)

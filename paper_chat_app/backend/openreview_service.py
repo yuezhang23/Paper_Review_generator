@@ -6,12 +6,17 @@ Handles all OpenReview API interactions and paper processing
 import os
 import json
 import re
+import csv
 from typing import Optional, List, Dict, Any
 import openreview
 from dotenv import load_dotenv
 import httpx
 import PyPDF2
 import io
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -490,6 +495,294 @@ async def retrieve_openreview_papers(query: str, limit: int = 5) -> List[Dict[st
         return papers
     except Exception as e:
         return []
+
+
+def extract_numeric_value(value: Any) -> Optional[float]:
+    """Extract numeric value from a string or number"""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Try to extract first number from string (e.g., "5: marginally below" -> 5)
+        match = re.search(r'(\d+(?:\.\d+)?)', str(value))
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def clean_nul_bytes(text: str) -> str:
+    """Remove NUL bytes from text"""
+    if not isinstance(text, str):
+        text = str(text)
+    return text.replace('\x00', '')
+
+
+def get_meta_reviews_for_single_paper(paper_id: str, output_csv_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Retrieve meta reviews for a single paper and optionally save to CSV.
+    Similar to get_reviews_for_single_submission in the example code.
+    
+    Args:
+        paper_id: OpenReview paper ID
+        output_csv_path: Optional path to save CSV file. If None, saves to paper directory.
+    
+    Returns:
+        Dictionary with paper_id, metareviews list, and decision
+    """
+    try:
+        or_client = get_openreview_client()
+        if not or_client:
+            logger.error("OpenReview client not available")
+            return {'paper_id': paper_id, 'metareviews': [], 'decision': ''}
+        
+        # Get paper note - try to get with details first (like example code)
+        submission = None
+        replies = []
+        
+        try:
+            # Try to get note with details='replies' (similar to example code)
+            submission = or_client.get_note(paper_id, details='replies')
+            # Access replies from details (like example: s.details['replies'])
+            if hasattr(submission, 'details') and submission.details:
+                replies = submission.details.get('replies', [])
+            elif hasattr(submission, 'details') and isinstance(submission.details, dict):
+                replies = submission.details.get('replies', [])
+        except Exception as e:
+            logger.warning(f"Could not get note with details for {paper_id}: {str(e)}")
+            try:
+                # Fallback: get note first, then get all notes from forum
+                submission = or_client.get_note(paper_id)
+                forum_id = submission.forum if hasattr(submission, 'forum') else paper_id
+                # Get all notes from forum (includes submission and all replies)
+                all_notes = or_client.get_notes(forum=forum_id)
+                # Convert to JSON format and filter to only replies
+                for note in all_notes:
+                    if hasattr(note, 'to_json'):
+                        note_json = note.to_json()
+                    else:
+                        note_json = dict(note)
+                    # Include all notes except the submission itself
+                    if note_json.get('id') != paper_id:
+                        replies.append(note_json)
+            except Exception as e2:
+                logger.error(f"Error fetching paper {paper_id}: {str(e2)}")
+                return {'paper_id': paper_id, 'metareviews': [], 'decision': ''}
+        
+        # Get submission ID (might be different from paper_id if paper_id is forum)
+        if submission:
+            if hasattr(submission, 'id'):
+                submission_id = submission.id
+            elif hasattr(submission, 'to_json'):
+                submission_id = submission.to_json().get('id', paper_id)
+            else:
+                submission_id = paper_id
+        else:
+            submission_id = paper_id
+        
+        # Define fields to extract (same as example)
+        fields = ['summary', 'soundness', 'presentation', 'contribution', 'strengths', 'weaknesses', 'questions', 'limitations', 'rating', 'confidence']
+        numeric_fields = {'soundness', 'presentation', 'contribution', 'rating', 'confidence'}
+        
+        # Helper function to link comments recursively
+        def link_comments(comment_values, comment_id, accr_values):
+            """Recursively link comments to form threaded conversations"""
+            for cc in comment_values:
+                if cc['reply_id'] == comment_id:
+                    accr_values += '\n\nReply:\n' + cc['comment']
+                    accr_values = link_comments(comment_values, cc['c_id'], accr_values)
+                    break
+            return accr_values
+        
+        # Process all replies
+        rebuttal_values = []
+        official_values = []
+        comment_values = []
+        decision = ''
+        
+        # Convert replies to Note objects (like example: Note.from_json(reply))
+        reviews = []
+        for reply in replies:
+            try:
+                if isinstance(reply, dict):
+                    reviews.append(openreview.api.Note.from_json(reply))
+                elif hasattr(reply, 'to_json'):
+                    # Already a Note object, use as is
+                    reviews.append(reply)
+                else:
+                    # Try to convert
+                    reviews.append(openreview.api.Note.from_json(reply))
+            except Exception as e:
+                logger.warning(f"Could not convert reply to Note: {str(e)}")
+                # Create a minimal Note-like object
+                class NoteLike:
+                    def __init__(self, data):
+                        self.id = data.get('id', '') if isinstance(data, dict) else getattr(data, 'id', '')
+                        self.replyto = data.get('replyto', '') if isinstance(data, dict) else getattr(data, 'replyto', '')
+                        if isinstance(data, dict):
+                            self.content = data.get('content', {})
+                        else:
+                            self.content = getattr(data, 'content', {})
+                reviews.append(NoteLike(reply))
+        
+        for r in reviews:
+            try:
+                # Get content and IDs
+                if hasattr(r, 'content'):
+                    content = r.content
+                else:
+                    content = getattr(r, 'content', {})
+                
+                if hasattr(r, 'id'):
+                    reply_id = r.id
+                else:
+                    reply_id = getattr(r, 'id', '')
+                
+                if hasattr(r, 'replyto'):
+                    replyto = r.replyto
+                else:
+                    replyto = getattr(r, 'replyto', '')
+                
+                # Process rebuttals
+                if 'rebuttal' in content.keys():
+                    rebuttal_text = content['rebuttal'].get('value', '') if isinstance(content['rebuttal'], dict) else str(content.get('rebuttal', ''))
+                    rebuttal_values.append({
+                        'r_id': reply_id,
+                        'reply_id': replyto,
+                        'rebuttal': rebuttal_text
+                    })
+                # Process comments (not decisions, not rebuttals)
+                elif 'decision' not in content.keys() and 'comment' in content.keys():
+                    comment_text = content['comment'].get('value', '') if isinstance(content['comment'], dict) else str(content.get('comment', ''))
+                    comment_values.append({
+                        'c_id': reply_id,
+                        'reply_id': replyto,
+                        'comment': comment_text
+                    })
+                # Process official reviews (meta reviews with summary field)
+                elif 'summary' in content.keys():
+                    if replyto == submission_id:
+                        values = []
+                        for field in fields:
+                            field_content = content.get(field, {})
+                            if isinstance(field_content, dict):
+                                value = field_content.get('value', None)
+                            else:
+                                value = field_content
+                            
+                            if field in numeric_fields:
+                                value = extract_numeric_value(value)
+                            elif value is None:
+                                value = 'not_provided'
+                            else:
+                                value = str(value)
+                            
+                            # Clean NUL bytes
+                            value = clean_nul_bytes(str(value))
+                            values.append(value)
+                        
+                        official_values.append({
+                            'id': reply_id,
+                            'values': values,
+                            'rebuttal': ''
+                        })
+                # Process decisions
+                elif 'decision' in content.keys() and replyto == submission_id:
+                    decision_value = content['decision'].get('value', '') if isinstance(content['decision'], dict) else str(content.get('decision', ''))
+                    decision = decision_value
+            except KeyError as e:
+                logger.error(f"Error processing review {getattr(r, 'id', 'unknown')}: {str(e)}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error processing review {getattr(r, 'id', 'unknown')}: {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                continue
+        
+        # Add comments to rebuttals
+        for rebut_data in rebuttal_values:
+            for comment_data in comment_values:
+                if comment_data['reply_id'] == rebut_data['r_id']:
+                    accr_values = link_comments(comment_values, comment_data['c_id'], '')
+                    rebut_data['rebuttal'] += '\n\nComment:\n' + comment_data['comment'] + accr_values
+        
+        # Add rebuttals and comments to official reviews
+        for official_data in official_values:
+            for rebuttal_data in rebuttal_values:
+                if rebuttal_data['reply_id'] == official_data['id']:
+                    official_data['rebuttal'] += rebuttal_data['rebuttal']
+            for comment_data in comment_values:
+                if comment_data['reply_id'] == official_data['id']:
+                    accr_values = link_comments(comment_values, comment_data['c_id'], '')
+                    official_data['rebuttal'] += '\n\nComment:\n' + comment_data['comment'] + accr_values
+            official_data['rebuttal'] = clean_nul_bytes(official_data['rebuttal'])
+        
+        # Add rebuttals directly to submission (standalone rebuttals)
+        for rebuttal_data in rebuttal_values:
+            if rebuttal_data['reply_id'] == submission_id:
+                rebuttal_text = clean_nul_bytes(rebuttal_data['rebuttal'])
+                official_values.append({
+                    'id': rebuttal_data['r_id'],
+                    'values': [None] * len(fields),
+                    'rebuttal': rebuttal_text
+                })
+        
+        result = {
+            'paper_id': submission_id,
+            'metareviews': official_values,
+            'decision': decision
+        }
+        
+        # Save to CSV if output path is provided or use default location
+        if output_csv_path is None:
+            # Use default location in paper directory
+            paper_dir = os.path.join(OPENREVIEW_DOCS_DIR, paper_id)
+            os.makedirs(paper_dir, exist_ok=True)
+            output_csv_path = os.path.join(paper_dir, 'meta_reviews.csv')
+        
+        # Write to CSV
+        try:
+            with open(output_csv_path, 'w', encoding='utf-8', newline='') as csvfile:
+                fieldnames = ['s_id', 'id', 'summary', 'soundness', 'presentation', 'contribution', 
+                             'strengths', 'weaknesses', 'questions', 'limitations', 'rating', 
+                             'confidence', 'rebuttal', 'decision']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                
+                for official_value in official_values:
+                    # Helper to safely get value or empty string
+                    def get_value(index):
+                        if len(official_value['values']) > index:
+                            val = official_value['values'][index]
+                            return '' if val is None else str(val)
+                        return ''
+                    
+                    row = {
+                        's_id': submission_id,
+                        'id': official_value['id'] or '',
+                        'summary': get_value(0),
+                        'soundness': get_value(1),
+                        'presentation': get_value(2),
+                        'contribution': get_value(3),
+                        'strengths': get_value(4),
+                        'weaknesses': get_value(5),
+                        'questions': get_value(6),
+                        'limitations': get_value(7),
+                        'rating': get_value(8),
+                        'confidence': get_value(9),
+                        'rebuttal': official_value.get('rebuttal', '') or '',
+                        'decision': decision or ''
+                    }
+                    writer.writerow(row)
+            
+            logger.info(f"Saved meta reviews to {output_csv_path}")
+        except Exception as e:
+            logger.error(f"Error saving CSV to {output_csv_path}: {str(e)}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in get_meta_reviews_for_single_paper for {paper_id}: {str(e)}")
+        return {'paper_id': paper_id, 'metareviews': [], 'decision': ''}
 
 
 def create_papers_selection_list(papers: List[Dict[str, Any]], include_none: bool = True) -> List[Dict[str, Any]]:

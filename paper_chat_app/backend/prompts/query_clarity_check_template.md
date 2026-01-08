@@ -17,10 +17,10 @@ Consider these scenarios as unclear:
 - Ambiguous questions that could have multiple interpretations
 
 Examples:
-- "What is the main contribution?" (no paper specified) -> {"is_clear": false, "clarification_question": "Which paper are you asking about? Please specify the paper title or provide more context."}
-- "Summarize the Transformer paper" -> {"is_clear": true, "clarification_question": null}
-- "Tell me about it" -> {"is_clear": false, "clarification_question": "What specific aspect of the paper would you like to know about? For example: methodology, experimental results, key contributions, limitations, or comparisons with other works."}
-- "What are the experimental results in the Transformer paper?" -> {"is_clear": true, "clarification_question": null}
-- "Compare them" -> {"is_clear": false, "clarification_question": "Which papers would you like me to compare? Please specify the papers you're interested in."}
+- "What is the main contribution?" (no paper specified) -> {{"is_clear": false, "clarification_question": "Which paper are you asking about? Please specify the paper title or provide more context."}}
+- "Summarize the Transformer paper" -> {{"is_clear": true, "clarification_question": null}}
+- "Tell me about it" -> {{"is_clear": false, "clarification_question": "What specific aspect of the paper would you like to know about? For example: methodology, experimental results, key contributions, limitations, or comparisons with other works."}}
+- "What are the experimental results in the Transformer paper?" -> {{"is_clear": true, "clarification_question": null}}
+- "Compare them" -> {{"is_clear": false, "clarification_question": "Which papers would you like me to compare? Please specify the papers you're interested in."}}
 
 Respond only with valid JSON, no additional text.

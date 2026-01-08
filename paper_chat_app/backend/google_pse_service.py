@@ -54,6 +54,89 @@ def is_search_needed(query: str) -> bool:
     return has_search_keyword or (is_question and has_date) or len(query.split()) > 10
 
 
+def predict_google_pse_benefit_score(query: str) -> float:
+    """
+    Orchestration function that predicts the likelihood (0-1) that a query would benefit from Google PSE.
+    
+    This function estimates how much a query would benefit from real-time web search.
+    Higher scores indicate queries that would significantly benefit from Google PSE.
+    
+    Args:
+        query: User's query text
+        
+    Returns:
+        Float between 0.0 and 1.0 representing the prediction score
+    """
+    if not query or not query.strip():
+        return 0.0
+    
+    query_lower = query.lower().strip()
+    score = 0.0
+    
+    # Factor 1: Time-sensitive keywords (high weight: 0.3)
+    time_keywords = ["latest", "recent", "current", "new", "today", "now", "2024", "2025", "2023", "2026"]
+    has_time_keyword = any(keyword in query_lower for keyword in time_keywords)
+    if has_time_keyword:
+        score += 0.3
+    
+    # Factor 2: Search intent keywords (high weight: 0.25)
+    search_intent_keywords = [
+        "find", "search", "look for", "discover", "locate",
+        "papers about", "research on", "studies on", "articles about",
+        "what are", "who are", "where are"
+    ]
+    has_search_intent = any(keyword in query_lower for keyword in search_intent_keywords)
+    if has_search_intent:
+        score += 0.25
+    
+    # Factor 3: Question words indicating information need (medium weight: 0.2)
+    question_words = ["what", "who", "when", "where", "why", "how"]
+    starts_with_question = any(query_lower.startswith(word) for word in question_words)
+    if starts_with_question:
+        score += 0.2
+    
+    # Factor 4: Academic/research context (medium weight: 0.15)
+    academic_keywords = ["paper", "papers", "research", "study", "studies", "article", "publication", 
+                         "arxiv", "conference", "journal", "academic", "scholarly"]
+    has_academic_context = any(keyword in query_lower for keyword in academic_keywords)
+    if has_academic_context:
+        score += 0.3
+    
+    # Factor 5: Query complexity/length (low weight: 0.1)
+    # Longer, more complex queries often benefit more from search
+    word_count = len(query.split())
+    if word_count > 10:
+        score += 0.1
+    elif word_count > 5:
+        score += 0.05
+    
+    # Factor 6: Specific entity/name mentions (low weight: 0.05)
+    # Queries mentioning specific entities (capitalized words, proper nouns) may need current info
+    has_proper_nouns = bool(re.search(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query))
+    if has_proper_nouns and word_count > 3:
+        score += 0.05
+    
+    # Factor 7: Comparison or evaluation requests (low weight: 0.05)
+    comparison_keywords = ["compare", "difference", "versus", "vs", "better", "best", "top", "ranking"]
+    has_comparison = any(keyword in query_lower for keyword in comparison_keywords)
+    if has_comparison:
+        score += 0.05
+    
+    # Penalty: Simple conversational queries (reduce score)
+    simple_greetings = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "yes", "no"]
+    if any(query_lower.strip() == greeting for greeting in simple_greetings):
+        score *= 0.1  # Heavily penalize simple greetings
+    
+    # Penalty: Very short queries without search indicators
+    if word_count <= 3 and not has_search_intent and not starts_with_question:
+        score *= 0.5
+    
+    # Ensure score is between 0.0 and 1.0
+    score = max(0.0, min(1.0, score))
+    
+    return round(score, 3)
+
+
 async def search_google_pse(
     query: str,
     num_results: int = 10,
