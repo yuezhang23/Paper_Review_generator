@@ -4,8 +4,7 @@ Handles extraction and logging of paper summaries to CSV.
 """
 
 from typing import List, Dict, Any, Optional
-from content_extraction import extract_augmented_prompt_from_messages
-from utils import log_paper_summary
+from utils import log_paper_summary, extract_augmented_prompt_from_messages
 
 
 def log_paper_summary_if_needed(

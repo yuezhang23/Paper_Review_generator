@@ -202,65 +202,103 @@ export default function Home() {
   const handleSummary = async () => {
     if (!currentForm || activeTab !== 'summary') return
     
-    let fileIds: string[] = []
+    setIsProcessing(true)
+    setError(null)
+    
+    try {
+      let fileIds: string[] = []
 
-    // Handle file upload
-    if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
-      const formData = new FormData()
-      formData.append('files', currentForm.uploadedFile.file)
+      // Handle file upload
+      if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
+        const formData = new FormData()
+        formData.append('files', currentForm.uploadedFile.file)
 
-      const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 60000 // 60 seconds for file upload
+        })
+        fileIds = uploadResponse.data.file_ids || []
+      }
+
+      // Call dedicated summary API endpoint
+      // Model defaults to "supermind-agent-v1" on backend
+      // Increased timeout to 15 minutes (900000ms) to handle long-running RAG pipeline
+      // This includes: GROBID parsing, table/figure extraction, multimodal analysis, embedding creation
+      const response = await axios.post(`${API_BASE_URL}/api/summary`, {
+        file_ids: fileIds.length > 0 ? fileIds : undefined,
+        paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
+        paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined,
+        use_openreview: true,
+        // model defaults to "supermind-agent-v1" on backend
+      }, {
+        timeout: 900000 // 15 minutes (900,000 ms) - enough for full RAG pipeline processing
       })
-      fileIds = uploadResponse.data.file_ids || []
+
+      setSummaryResult({
+        type: 'summary',
+        content: response.data.message || response.data.summary,
+        timestamp: new Date(),
+        metadata: response.data
+      })
+    } catch (err: any) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Request timed out. The paper processing is taking longer than expected. Please try again or use a smaller PDF.')
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Failed to generate summary')
+      }
+      console.error('Summary error:', err)
+    } finally {
+      setIsProcessing(false)
     }
-
-    // Call dedicated summary API endpoint
-    const response = await axios.post(`${API_BASE_URL}/api/summary`, {
-      file_ids: fileIds.length > 0 ? fileIds : undefined,
-      paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
-      paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined,
-      use_openreview: true,
-      model: 'grok-4-fast'
-    })
-
-    setSummaryResult({
-      type: 'summary',
-      content: response.data.message || response.data.summary,
-      timestamp: new Date(),
-      metadata: response.data
-    })
   }
 
   const handlePlagiarism = async () => {
     if (!currentForm || activeTab !== 'plagiarism') return
     
-    let fileIds: string[] = []
+    setIsProcessing(true)
+    setError(null)
+    
+    try {
+      let fileIds: string[] = []
 
-    // Handle file upload
-    if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
-      const formData = new FormData()
-      formData.append('files', currentForm.uploadedFile.file)
+      // Handle file upload
+      if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
+        const formData = new FormData()
+        formData.append('files', currentForm.uploadedFile.file)
 
-      const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 60000 // 60 seconds for file upload
+        })
+        fileIds = uploadResponse.data.file_ids || []
+      }
+
+      // Call plagiarism checker API
+      // Increased timeout to 10 minutes (600000ms) for plagiarism analysis
+      const response = await axios.post(`${API_BASE_URL}/api/plagiarism-check`, {
+        file_ids: fileIds.length > 0 ? fileIds : undefined,
+        paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
+        paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined
+      }, {
+        timeout: 600000 // 10 minutes (600,000 ms) - enough for plagiarism analysis
       })
-      fileIds = uploadResponse.data.file_ids || []
+
+      setPlagiarismResult({
+        type: 'plagiarism',
+        content: response.data.analysis,
+        timestamp: new Date(),
+        metadata: response.data
+      })
+    } catch (err: any) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Request timed out. The plagiarism analysis is taking longer than expected. Please try again or use a smaller PDF.')
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Failed to check plagiarism')
+      }
+      console.error('Plagiarism error:', err)
+    } finally {
+      setIsProcessing(false)
     }
-
-    // Call plagiarism checker API
-    const response = await axios.post(`${API_BASE_URL}/api/plagiarism-check`, {
-      file_ids: fileIds.length > 0 ? fileIds : undefined,
-      paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
-      paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined
-    })
-
-    setPlagiarismResult({
-      type: 'plagiarism',
-      content: response.data.analysis,
-      timestamp: new Date(),
-      metadata: response.data
-    })
   }
 
   const sendChatMessage = async () => {

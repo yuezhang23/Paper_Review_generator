@@ -7,7 +7,7 @@ import json
 from typing import Optional, List, Dict, Any
 from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
-from shared_utils import get_ai_client, extract_paper_content
+from utils import get_ai_client, extract_paper_content
 
 # Create router for plagiarism endpoints
 router = APIRouter(prefix="/api", tags=["plagiarism"])

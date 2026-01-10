@@ -38,4 +38,27 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# Embeddings cache
+backend/embeddings_cache/
+
+# Uploaded files (PDFs and other large files)
+backend/uploads/
+*.pdf
+
+# Large external libraries
+FlagEmbedding/
+
+# Figures and images (if large)
+backend/figures/
+
+# Large data files
+*.json
+*.jsonl
+!package.json
+!package-lock.json
+!tsconfig.json
+!next.config.js
+!tailwind.config.js
+!postcss.config.js
+!*.config.json
 

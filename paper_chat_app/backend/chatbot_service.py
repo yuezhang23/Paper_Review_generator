@@ -14,21 +14,19 @@ from openreview_service import (
     fetch_and_save_openreview_paper,
     get_meta_reviews_for_single_paper
 )
-from shared_utils import (
-    get_ai_client,
-    predict_search_benefit_score,
-    web_search_paper,
-    find_related_documents_ai_builder
-)
 from utils import (
     file_storage,
     load_prompt_template,
     PAPER_ANALYSIS_SYSTEM_PROMPT,
     PAPER_SUMMARY_TEMPLATE,
     PLAGIARISM_ANALYSIS_TEMPLATE,
-    format_search_results_for_context
+    format_search_results_for_context,
+    find_best_matching_paper,
+    get_ai_client,
+    predict_search_benefit_score,
+    web_search_paper,
+    find_related_documents_ai_builder
 )
-from content_extraction import find_best_matching_paper
 from summary_logs.summary_logger import log_paper_summary_if_needed
 
 # Create router for chatbot endpoints

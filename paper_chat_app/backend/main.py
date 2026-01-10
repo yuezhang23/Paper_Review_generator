@@ -18,11 +18,11 @@ from openreview_service import (
 from utils import (
     file_storage,
     PAPER_QUERY_SUGGESTIONS,
+    upload_files,
 )
-from externals import upload_files
 
 # Import service routers
-from summary_service import router as summary_router
+from summary_generator.main import router as summary_router
 from plagiarism_service import router as plagiarism_router
 from chatbot_service import router as chatbot_router
 
@@ -280,9 +280,20 @@ async def get_paper_context(request: PaperIdRequest):
 # - Summary functionality: summary_service.py
 # - Plagiarism functionality: plagiarism_service.py
 # - Chatbot functionality: chatbot_service.py
-# - Shared utilities: shared_utils.py
+# - All utilities: utils.py
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Configure timeouts for long-running requests (e.g., RAG pipeline processing)
+    # timeout_keep_alive: time to keep connection alive (30 seconds)
+    # timeout_graceful_shutdown: time to wait for graceful shutdown
+    # Default request timeout is handled by the ASGI server (usually 120s)
+    # For very long operations like RAG processing, we increase these values
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=300,  # 5 minutes - keep connections alive longer
+        timeout_graceful_shutdown=30  # 30 seconds for graceful shutdown
+    )
