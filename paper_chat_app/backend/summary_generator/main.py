@@ -27,7 +27,6 @@ from openreview_service import fetch_and_save_openreview_paper, parse_openreview
 
 # Import from summary_generator modules
 from .embeddings import embed_texts, build_rag_index
-from .utils import extract_tables, extract_figures
 
 # Create router for summary endpoints
 router = APIRouter(prefix="/api", tags=["summary"])
@@ -43,6 +42,8 @@ class SummaryRequest(BaseModel):
     paper_name: Optional[str] = None
     use_openreview: Optional[bool] = True
     model: Optional[str] = "supermind-agent-v1"
+    figure_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
+    table_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
 
 
 async def resolve_pdf_path(
@@ -172,7 +173,14 @@ async def paper_summary(request: SummaryRequest):
         # Step 3: Build RAG index following the architecture (async optimized)
         logger.info("[Step 3] Building RAG index...")
         try:
-            index = await build_rag_index(pdf_path)
+            figure_extraction = request.figure_extraction_method or "none"
+            table_extraction = request.table_extraction_method or "none"
+            logger.info(f"[Step 3] Using figure extraction: {figure_extraction}, table extraction: {table_extraction}")
+            index = await build_rag_index(
+                pdf_path,
+                figure_extraction_method=figure_extraction,
+                table_extraction_method=table_extraction
+            )
             logger.info(f"[Step 3] RAG index built successfully. Index contains {len(index.texts)} text chunks")
         except Exception as e:
             logger.error(f"[Step 3] Failed to build RAG index: {str(e)}\n{traceback.format_exc()}")

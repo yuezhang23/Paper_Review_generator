@@ -66,3 +66,6 @@ FlagEmbedding/
 
 # PDF files (can be large)
 *.pdf
+
+# Cache directories
+embeddings_cache/

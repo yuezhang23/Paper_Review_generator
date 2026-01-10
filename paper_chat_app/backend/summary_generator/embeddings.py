@@ -4,14 +4,32 @@ import numpy as np
 import logging
 import traceback
 import platform
-import hashlib
-import pickle
-import json
 import asyncio
 from typing import List, Tuple, Optional
 from FlagEmbedding import FlagAutoModel
-from .utils import grobid_parse, extract_tables, extract_figures
-from .analyzer import analyze_figure, analyze_table
+import camelot
+import tabula
+import fitz
+from .utils import grobid_parse, select_important_tables_figures
+from .figure_table_ocr import (
+    enrich_figures_with_ocr,
+    enrich_tables_with_ocr
+)
+from .figure_table_multimodal import (
+    enrich_figures_with_multimodal,
+    enrich_tables_with_multimodal
+)
+from .cache import (
+    get_pdf_hash,
+    load_cached_grobid,
+    save_cached_grobid,
+    load_cached_tables,
+    save_cached_tables,
+    load_cached_figures,
+    save_cached_figures,
+    load_cached_index,
+    save_cached_index
+)
 
 # Fix OpenMP issues on Apple Silicon (M1/M2/M3)
 # Prevents "OMP: Error #179: Function Can't open SHM2 failed" errors
@@ -29,16 +47,67 @@ logger = logging.getLogger(__name__)
 # Lazy load model to avoid loading on import
 _model = None
 
-# Cache directory for embeddings
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "embeddings_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
+
+def extract_tables(pdf_path):
+    """
+    Extract tables from PDF using Camelot (primary) and Tabula (fallback).
+    
+    Args:
+        pdf_path: Path to PDF file
+        
+    Returns:
+        List of formatted table text strings
+    """
+    # Try Camelot first (best for vector PDFs)
+    try:
+        tables = camelot.read_pdf(pdf_path, pages="all")
+        return [f"Table {i+1}:\n{t.df.to_string(index=False)}" 
+                for i, t in enumerate(tables)]
+    except Exception as e:
+        logger.debug(f"[ExtractTables] Camelot failed: {e}, trying Tabula...")
+    
+    # Fallback to Tabula
+    try:
+        dfs = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
+        return [f"Table (Tabula) {i+1}:\n{df.to_string(index=False)}" 
+                for i, df in enumerate(dfs)]
+    except Exception as e:
+        logger.warning(f"[ExtractTables] Both extraction methods failed: {e}")
+        return []
 
 
-def is_apple_silicon():
-    """Detect if running on Apple Silicon (M1/M2/M3)"""
-    # Check for Apple Silicon architecture
-    # arm64 on macOS indicates Apple Silicon
-    return platform.system() == 'Darwin' and platform.machine() == 'arm64'
+def extract_figures(pdf_path, out_dir="figures"):
+    """
+    Extract figures from PDF and save as images.
+    
+    Args:
+        pdf_path: Path to PDF file
+        out_dir: Directory to save extracted images
+        
+    Returns:
+        List of extracted image file paths
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    figure_paths = []
+    
+    with fitz.open(pdf_path) as doc:
+        for page_num, page in enumerate(doc):
+            images = page.get_images(full=True)
+            for img_idx, img in enumerate(images):
+                xref = img[0]
+                pix = None
+                try:
+                    pix = fitz.Pixmap(doc, xref)
+                    # Only process GRAY or RGB images (n < 5)
+                    if pix.n < 5:
+                        img_path = os.path.join(out_dir, f"p{page_num}_img{img_idx}.png")
+                        pix.save(img_path)
+                        figure_paths.append(img_path)
+                finally:
+                    if pix is not None:
+                        pix = None  # Release Pixmap resource
+    
+    return figure_paths
 
 def get_embedding_model():
     """Get or initialize the embedding model (lazy loading)"""
@@ -46,9 +115,10 @@ def get_embedding_model():
     if _model is None:
         # Disable FP16 on Apple Silicon to prevent segmentation faults
         # FP16 support is problematic on M1/M2/M3 chips
-        use_fp16 = not is_apple_silicon()
+        is_apple = platform.system() == 'Darwin' and platform.machine() == 'arm64'
+        use_fp16 = not is_apple
         
-        if is_apple_silicon():
+        if is_apple:
             logger.info("[Embeddings] Detected Apple Silicon - disabling FP16 for compatibility")
         
         logger.info(f"[Embeddings] Loading FlagAutoModel: BAAI/bge-base-en-v1.5 (FP16={use_fp16})...")
@@ -148,274 +218,35 @@ class VectorIndex:
         return valid_results
 
 
-def get_pdf_hash(pdf_path: str) -> str:
-    """Generate a hash for the PDF file to use as cache key"""
-    hash_md5 = hashlib.md5()
-    with open(pdf_path, "rb") as f:
-        # Read file in chunks to handle large files
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
 
 
-def load_cached_grobid(pdf_hash: str) -> Optional[dict]:
-    """Load cached GROBID parsing results"""
-    cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_grobid.json")
-    if not os.path.exists(cache_file):
-        return None
-    try:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to load cached GROBID: {str(e)}")
-        return None
 
-
-def save_cached_grobid(pdf_hash: str, sections: dict):
-    """Save GROBID parsing results to cache"""
-    try:
-        cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_grobid.json")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(sections, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to save GROBID cache: {str(e)}")
-
-
-def load_cached_tables(pdf_hash: str) -> Optional[List[str]]:
-    """Load cached table extraction results"""
-    cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_tables.json")
-    if not os.path.exists(cache_file):
-        return None
-    try:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to load cached tables: {str(e)}")
-        return None
-
-
-def save_cached_tables(pdf_hash: str, tables: List[str]):
-    """Save table extraction results to cache"""
-    try:
-        cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_tables.json")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(tables, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to save tables cache: {str(e)}")
-
-
-def load_cached_figures(pdf_hash: str) -> Optional[List[str]]:
-    """Load cached figure paths"""
-    cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_figures.json")
-    if not os.path.exists(cache_file):
-        return None
-    try:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            figure_paths = json.load(f)
-            # Verify that figure files still exist
-            existing_paths = [p for p in figure_paths if os.path.exists(p)]
-            if len(existing_paths) != len(figure_paths):
-                logger.warning(f"[Cache] Some cached figure files are missing, will re-extract")
-                return None
-            return existing_paths
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to load cached figures: {str(e)}")
-        return None
-
-
-def save_cached_figures(pdf_hash: str, figure_paths: List[str]):
-    """Save figure paths to cache"""
-    try:
-        cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}_figures.json")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(figure_paths, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to save figures cache: {str(e)}")
-
-
-def load_cached_index(pdf_hash: str) -> Optional[VectorIndex]:
-    """Load cached embeddings and index if available"""
-    texts_file = os.path.join(CACHE_DIR, f"{pdf_hash}_texts.json")
-    embeddings_file = os.path.join(CACHE_DIR, f"{pdf_hash}_embeddings.npy")
-    
-    if not (os.path.exists(texts_file) and os.path.exists(embeddings_file)):
-        return None
-    
-    try:
-        logger.info(f"[Cache] Loading cached index for PDF hash: {pdf_hash[:8]}...")
-        # Load embeddings
-        embeddings = np.load(embeddings_file)
-        
-        # Load texts
-        with open(texts_file, 'r', encoding='utf-8') as f:
-            texts = json.load(f)
-        
-        # Rebuild index
-        index = VectorIndex(embeddings.shape[1])
-        index.add(embeddings, texts)
-        
-        logger.info(f"[Cache] Successfully loaded cached index with {len(texts)} entries")
-        return index
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to load cached index: {str(e)}. Will rebuild.")
-        return None
-
-
-def save_cached_index(pdf_hash: str, index: VectorIndex, embeddings: np.ndarray):
-    """Save embeddings and index to cache"""
-    try:
-        texts_file = os.path.join(CACHE_DIR, f"{pdf_hash}_texts.json")
-        embeddings_file = os.path.join(CACHE_DIR, f"{pdf_hash}_embeddings.npy")
-        
-        logger.info(f"[Cache] Saving index to cache for PDF hash: {pdf_hash[:8]}...")
-        
-        # Save embeddings
-        np.save(embeddings_file, embeddings)
-        
-        # Save texts
-        with open(texts_file, 'w', encoding='utf-8') as f:
-            json.dump(index.texts, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"[Cache] Successfully cached index")
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to save cache: {str(e)}")
-
-
-def select_important_tables_figures(
-    sections: dict,
-    tables: List[str],
-    figure_paths: List[str],
-    max_tables: int = 3,
-    max_figures: int = 3
-) -> Tuple[List[int], List[int]]:
-    """
-    Select important tables and figures based on heuristics:
-    - Mentioned in Abstract
-    - Mentioned in Conclusion
-    - Labeled "Main results"
-    - Contain SOTA comparisons or ablations
-    
-    Returns:
-        Tuple of (selected_table_indices, selected_figure_indices)
-    """
-    selected_tables = []
-    selected_figures = []
-    
-    # Handle empty tables/figures
-    if not tables and not figure_paths:
-        logger.info("[Selection] No tables or figures to select")
-        return [], []
-    
-    # Get Abstract and Conclusion sections
-    abstract_text = sections.get("Abstract", "").lower()
-    conclusion_text = sections.get("Conclusion", "").lower()
-    
-    # Check all sections for "main results" mentions
-    main_results_sections = []
-    for section_title, section_text in sections.items():
-        if "main result" in section_title.lower() or "main result" in section_text.lower():
-            main_results_sections.append(section_text.lower())
-    
-    all_relevant_text = abstract_text + " " + conclusion_text + " " + " ".join(main_results_sections)
-    
-    # Keywords for SOTA/ablation comparisons
-    sota_keywords = ["sota", "state-of-the-art", "state of the art", "best result", "competitive", "superior"]
-    ablation_keywords = ["ablation", "ablate", "ablation study", "ablation analysis"]
-    
-    # Score tables
-    table_scores = []
-    if tables:
-        for i, table_text in enumerate(tables):
-        score = 0
-        table_lower = table_text.lower()
-        
-        # Check if table number is mentioned in abstract/conclusion
-        table_refs = [f"table {i+1}", f"table{i+1}", f"tab. {i+1}", f"tab.{i+1}"]
-        for ref in table_refs:
-            if ref in all_relevant_text:
-                score += 10
-                logger.info(f"[Selection] Table {i+1} mentioned in Abstract/Conclusion/Main Results")
-        
-        # Check for SOTA comparisons
-        for keyword in sota_keywords:
-            if keyword in table_lower:
-                score += 5
-                logger.info(f"[Selection] Table {i+1} contains SOTA comparison")
-        
-        # Check for ablations
-        for keyword in ablation_keywords:
-            if keyword in table_lower:
-                score += 5
-                logger.info(f"[Selection] Table {i+1} contains ablation study")
-        
-        # Check if labeled as main results
-        if "main result" in table_lower:
-            score += 8
-            logger.info(f"[Selection] Table {i+1} labeled as main results")
-        
-            table_scores.append((score, i))
-    
-    # Select top tables
-    if table_scores:
-        table_scores.sort(reverse=True, key=lambda x: x[0])
-        selected_tables = [idx for score, idx in table_scores[:max_tables] if score > 0]
-        if not selected_tables:
-            # If no tables meet criteria, select first few
-            selected_tables = list(range(min(max_tables, len(tables))))
-            logger.info(f"[Selection] No tables met selection criteria, selecting first {len(selected_tables)} tables")
-        else:
-            logger.info(f"[Selection] Selected {len(selected_tables)} important tables: {selected_tables}")
-    else:
-        logger.info("[Selection] No tables available for selection")
-    
-    # Score figures (using figure paths as reference - figures are numbered by extraction order)
-    figure_scores = []
-    if figure_paths:
-        for i, fig_path in enumerate(figure_paths):
-        score = 0
-        
-        # Check if figure number is mentioned in abstract/conclusion
-        # Figure references typically use "Figure X" or "Fig. X"
-        fig_refs = [f"figure {i+1}", f"figure{i+1}", f"fig. {i+1}", f"fig.{i+1}", f"fig {i+1}"]
-        for ref in fig_refs:
-            if ref in all_relevant_text:
-                score += 10
-                logger.info(f"[Selection] Figure {i+1} mentioned in Abstract/Conclusion/Main Results")
-        
-        # For figures, we can't easily check content, so we rely on mentions
-        # But we'll also check if it's one of the first few figures (often important)
-        if i < 3:  # First 3 figures are often important
-            score += 2
-        
-            figure_scores.append((score, i))
-    
-    # Select top figures
-    if figure_scores:
-        figure_scores.sort(reverse=True, key=lambda x: x[0])
-        selected_figures = [idx for score, idx in figure_scores[:max_figures] if score > 0]
-        if not selected_figures:
-            # If no figures meet criteria, select first few
-            selected_figures = list(range(min(max_figures, len(figure_paths))))
-            logger.info(f"[Selection] No figures met selection criteria, selecting first {len(selected_figures)} figures")
-        else:
-            logger.info(f"[Selection] Selected {len(selected_figures)} important figures: {selected_figures}")
-    else:
-        logger.info("[Selection] No figures available for selection")
-    
-    return selected_tables, selected_figures
-
-
-async def build_rag_index(pdf_path):
+async def build_rag_index(
+    pdf_path: str,
+    figure_extraction_method: str = "none",
+    table_extraction_method: str = "none"
+):
     """
     Build RAG index following the architecture (async optimized):
     PDF → GROBID → sections → Tables (Camelot/Tabula) → Figures (image extraction)
-    → Optional Multimodal GPT analysis (selected tables/figures only, max 3 each, parallelized)
+    → Optional additional extraction (OCR or multimodal) for selected tables/figures
     → Embeddings → Vector Index
+    
+    Args:
+        pdf_path: Path to PDF file
+        figure_extraction_method: Method for additional figure content extraction
+            - "none": Only use GROBID captions (default)
+            - "ocr": Use Tesseract OCR to extract text from figures
+            - "multimodal": Use multi-modal AI to analyze figure content
+        table_extraction_method: Method for additional table content extraction
+            - "none": Only use GROBID captions (default)
+            - "ocr": Use OCR/Camelot/Tabula to extract table content
+            - "multimodal": Use multi-modal AI to analyze table content
     
     Implements caching: if paper has been processed before, loads from cache.
     Optimizations:
     - Parallelizes GROBID, table extraction, and figure extraction
-    - Parallelizes multimodal GPT analysis calls
+    - Parallelizes additional extraction calls
     - Caches intermediate results (GROBID, tables, figures)
     """
     logger.info(f"[BuildIndex] Starting RAG index build for PDF: {pdf_path}")
@@ -424,135 +255,192 @@ async def build_rag_index(pdf_path):
     pdf_hash = get_pdf_hash(pdf_path)
     logger.info(f"[BuildIndex] PDF hash: {pdf_hash[:16]}...")
     
-    cached_index = load_cached_index(pdf_hash)
+    cached_index = load_cached_index(pdf_hash, VectorIndex)
     if cached_index is not None:
         logger.info("[BuildIndex] Using cached embeddings and index")
         return cached_index
     
     logger.info("[BuildIndex] Cache not found, building new index...")
     
-    # Parallelize Step 1-3: GROBID parsing, table extraction, and figure extraction (independent operations)
-    logger.info("[BuildIndex] Step 1-3: Parallelizing GROBID parsing, table extraction, and figure extraction...")
+    # Determine if we need table/figure extraction
+    need_table_extraction = table_extraction_method != "none"
+    need_figure_extraction = figure_extraction_method != "none"
+    need_extraction = need_table_extraction or need_figure_extraction
     
     # Load from intermediate cache if available
     cached_sections = load_cached_grobid(pdf_hash)
-    cached_tables = load_cached_tables(pdf_hash)
-    cached_figures = load_cached_figures(pdf_hash)
+    cached_tables = load_cached_tables(pdf_hash) if need_table_extraction else None
+    cached_figures = load_cached_figures(pdf_hash) if need_figure_extraction else None
     
     async def parse_grobid():
         if cached_sections:
             logger.info("[BuildIndex] Using cached GROBID parsing")
             return cached_sections
-        logger.info("[BuildIndex] Step 1: Parsing PDF with GROBID...")
+        logger.info("[BuildIndex] Parsing PDF with GROBID...")
         try:
             sections = await asyncio.to_thread(grobid_parse, pdf_path)
-            logger.info(f"[BuildIndex] GROBID parsed {len(sections)} sections: {list(sections.keys())}")
+            logger.info(f"[BuildIndex] GROBID parsed {len(sections.get('sections', sections) if isinstance(sections, dict) else sections)} sections")
             save_cached_grobid(pdf_hash, sections)
             return sections
         except Exception as e:
-            logger.error(f"[BuildIndex] Step 1 failed - GROBID parsing error: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"[BuildIndex] GROBID parsing error: {str(e)}\n{traceback.format_exc()}")
             raise
     
     async def extract_tables_async():
+        if not need_table_extraction:
+            return []
         if cached_tables:
             logger.info("[BuildIndex] Using cached table extraction")
             return cached_tables
-        logger.info("[BuildIndex] Step 2: Extracting tables...")
+        logger.info("[BuildIndex] Extracting tables...")
         try:
             tables = await asyncio.to_thread(extract_tables, pdf_path)
             logger.info(f"[BuildIndex] Extracted {len(tables)} tables")
             save_cached_tables(pdf_hash, tables)
             return tables
         except Exception as e:
-            logger.error(f"[BuildIndex] Step 2 failed - Table extraction error: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"[BuildIndex] Table extraction error: {str(e)}\n{traceback.format_exc()}")
             raise
     
     async def extract_figures_async():
+        if not need_figure_extraction:
+            return []
         if cached_figures:
             logger.info("[BuildIndex] Using cached figure extraction")
             return cached_figures
-        logger.info("[BuildIndex] Step 3: Extracting figures...")
+        logger.info("[BuildIndex] Extracting figures...")
         try:
             figure_paths = await asyncio.to_thread(extract_figures, pdf_path)
-            logger.info(f"[BuildIndex] Extracted {len(figure_paths)} figures: {figure_paths}")
+            logger.info(f"[BuildIndex] Extracted {len(figure_paths)} figures")
             save_cached_figures(pdf_hash, figure_paths)
             return figure_paths
         except Exception as e:
-            logger.error(f"[BuildIndex] Step 3 failed - Figure extraction error: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"[BuildIndex] Figure extraction error: {str(e)}\n{traceback.format_exc()}")
             raise
     
-    # Run all three operations in parallel
-    sections, tables, figure_paths = await asyncio.gather(
-        parse_grobid(),
-        extract_tables_async(),
-        extract_figures_async()
-    )
-
-    texts = []
-
-    # Add sections to texts
-    logger.info("[BuildIndex] Adding sections to texts...")
-    for title, text in sections.items():
-        texts.append(f"[SECTION] {title}\n{text}")
-    logger.info(f"[BuildIndex] Added {len(sections)} sections to texts list")
-
-    # Step 4: Select important tables and figures based on heuristics
-    logger.info("[BuildIndex] Step 4: Selecting important tables and figures...")
-    selected_table_indices, selected_figure_indices = select_important_tables_figures(
-        sections, tables, figure_paths, max_tables=3, max_figures=3
-    )
-    
-    # Step 4: Analyze selected tables and figures with multimodal GPT in parallel (optional, max 3 each)
-    analysis_tasks = []
-    analysis_metadata = []  # Track (type, idx)
-    
-    # Create tasks for table analysis
-    if selected_table_indices:
-        logger.info(f"[BuildIndex] Step 4a: Preparing to analyze {len(selected_table_indices)} selected tables with AI (parallel)...")
-        for idx in selected_table_indices:
-            task = analyze_table(tables[idx])
-            analysis_tasks.append(task)
-            analysis_metadata.append(("table", idx))
+    # Run operations conditionally - only extract tables/figures if needed
+    if need_extraction:
+        logger.info("[BuildIndex] Running GROBID parsing and extraction in parallel...")
+        grobid_result, tables, figure_paths = await asyncio.gather(
+            parse_grobid(),
+            extract_tables_async(),
+            extract_figures_async()
+        )
     else:
-        logger.info("[BuildIndex] Step 4a: No tables selected for multimodal analysis")
+        logger.info("[BuildIndex] Only using GROBID parsing (no table/figure extraction needed)...")
+        grobid_result = await parse_grobid()
+        tables = []
+        figure_paths = []
+
+    # Extract sections and captions from GROBID result
+    sections = grobid_result.get("sections", grobid_result) if isinstance(grobid_result, dict) else grobid_result
+    figure_captions = grobid_result.get("figure_captions", []) if isinstance(grobid_result, dict) else []
+    table_captions = grobid_result.get("table_captions", []) if isinstance(grobid_result, dict) else []
+
+    # Build initial text chunks from sections and captions
+    texts = [f"[SECTION] {title}\n{text}" for title, text in sections.items()]
+    texts.extend(f"[FIGURE CAPTION {i+1}]\n{caption}" for i, caption in enumerate(figure_captions))
+    texts.extend(f"[TABLE CAPTION {i+1}]\n{caption}" for i, caption in enumerate(table_captions))
     
-    # Create tasks for figure analysis
-    if selected_figure_indices:
-        logger.info(f"[BuildIndex] Step 4b: Preparing to analyze {len(selected_figure_indices)} selected figures with AI (parallel)...")
-        for idx in selected_figure_indices:
-            fig_path = figure_paths[idx]
-            task = analyze_figure(fig_path)
-            analysis_tasks.append(task)
-            analysis_metadata.append(("figure", idx))
-    else:
-        logger.info("[BuildIndex] Step 4b: No figures selected for multimodal analysis")
-    
-    # Execute all analyses in parallel
-    if analysis_tasks:
-        logger.info(f"[BuildIndex] Running {len(analysis_tasks)} multimodal analyses in parallel...")
-        results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+    logger.info(f"[BuildIndex] Added {len(sections)} sections, {len(figure_captions)} figure captions, {len(table_captions)} table captions")
+
+    # Apply additional extraction only if needed
+    if need_extraction:
+        # Select important tables and figures based on heuristics
+        logger.info("[BuildIndex] Selecting important tables and figures...")
+        selected_table_indices, selected_figure_indices = select_important_tables_figures(
+            sections, tables, figure_paths, max_tables=3, max_figures=3
+        )
         
-        # Process results
-        for (item_type, idx), result in zip(analysis_metadata, results):
-            try:
-                if isinstance(result, Exception):
-                    raise result
-                
-                if item_type == "table":
-                    texts.append(f"[TABLE {idx+1}]\n{result}")
-                    logger.info(f"[BuildIndex] Table {idx+1} analyzed successfully")
-                else:  # figure
-                    texts.append(f"[FIGURE {idx+1}]\n{result}")
-                    logger.info(f"[BuildIndex] Figure {idx+1} analyzed successfully")
-            except Exception as e:
-                logger.error(f"[BuildIndex] Failed to analyze {item_type} {idx+1}: {str(e)}\n{traceback.format_exc()}")
-                error_text = f"[{item_type.upper()} {idx+1}]\nError analyzing {item_type}: {str(e)}"
-                texts.append(error_text)
+        # Prepare enrichment tasks
+        enrichment_tasks = []
+        
+        # Enrich figures if needed
+        if figure_extraction_method != "none" and selected_figure_indices:
+            selected_figure_paths = [figure_paths[idx] for idx in selected_figure_indices]
+            selected_figure_captions = [
+                figure_captions[idx] if idx < len(figure_captions) else f"Figure {idx+1}" 
+                for idx in selected_figure_indices
+            ]
+            
+            logger.info(f"[BuildIndex] Applying {figure_extraction_method} to {len(selected_figure_indices)} figures...")
+            if figure_extraction_method == "ocr":
+                async def enrich_figures_task():
+                    try:
+                        enriched = await asyncio.to_thread(enrich_figures_with_ocr, selected_figure_paths, selected_figure_captions)
+                        for fig_data in enriched:
+                            orig_idx = selected_figure_indices[fig_data["figure_index"]]
+                            if fig_data.get("content"):
+                                texts.append(f"[FIGURE {orig_idx+1}] Caption: {fig_data['caption']}\nOCR Content:\n{fig_data['content']}")
+                                logger.debug(f"[BuildIndex] Figure {orig_idx+1}: {len(fig_data['content'])} chars")
+                    except Exception as e:
+                        logger.error(f"[BuildIndex] Failed OCR extraction for figures: {str(e)}")
+                enrichment_tasks.append(enrich_figures_task())
+            elif figure_extraction_method == "multimodal":
+                async def enrich_figures_task():
+                    try:
+                        enriched = await enrich_figures_with_multimodal(selected_figure_paths, selected_figure_captions)
+                        for fig_data in enriched:
+                            orig_idx = selected_figure_indices[fig_data["figure_index"]]
+                            if fig_data.get("content"):
+                                texts.append(f"[FIGURE {orig_idx+1}] Caption: {fig_data['caption']}\nAnalysis:\n{fig_data['content']}")
+                                logger.debug(f"[BuildIndex] Figure {orig_idx+1}: {len(fig_data['content'])} chars")
+                    except Exception as e:
+                        logger.error(f"[BuildIndex] Failed multimodal extraction for figures: {str(e)}")
+                enrichment_tasks.append(enrich_figures_task())
+        
+        # Enrich tables if needed
+        if selected_table_indices:
+            selected_table_content = [tables[idx] for idx in selected_table_indices]
+            selected_table_captions = [
+                table_captions[idx] if idx < len(table_captions) else f"Table {idx+1}" 
+                for idx in selected_table_indices
+            ]
+            
+            if table_extraction_method == "none":
+                # Add basic table content
+                for idx in selected_table_indices:
+                    if idx < len(tables):
+                        texts.append(f"[TABLE {idx+1}]\n{tables[idx]}")
+            else:
+                logger.info(f"[BuildIndex] Applying {table_extraction_method} to {len(selected_table_indices)} tables...")
+                if table_extraction_method == "ocr":
+                    async def enrich_tables_task():
+                        try:
+                            enriched = await asyncio.to_thread(enrich_tables_with_ocr, selected_table_content, selected_table_captions)
+                            for table_data in enriched:
+                                orig_idx = selected_table_indices[table_data["table_index"]]
+                                if table_data.get("content"):
+                                    texts.append(f"[TABLE {orig_idx+1}] Caption: {table_data['caption']}\nContent:\n{table_data['content']}")
+                                    logger.debug(f"[BuildIndex] Table {orig_idx+1}: {len(table_data['content'])} chars")
+                        except Exception as e:
+                            logger.error(f"[BuildIndex] Failed OCR extraction for tables: {str(e)}")
+                    enrichment_tasks.append(enrich_tables_task())
+                elif table_extraction_method == "multimodal":
+                    async def enrich_tables_task():
+                        try:
+                            enriched = await enrich_tables_with_multimodal(selected_table_content, selected_table_captions)
+                            for table_data in enriched:
+                                if table_data["table_index"] < len(selected_table_indices):
+                                    orig_idx = selected_table_indices[table_data["table_index"]]
+                                    analysis = table_data.get("analysis", "")
+                                    if analysis:
+                                        texts.append(f"[TABLE {orig_idx+1}] Caption: {table_data['caption']}\nContent:\n{table_data.get('content', '')}\nAnalysis:\n{analysis}")
+                                        logger.debug(f"[BuildIndex] Table {orig_idx+1}: {len(analysis)} chars")
+                        except Exception as e:
+                            logger.error(f"[BuildIndex] Failed multimodal extraction for tables: {str(e)}")
+                    enrichment_tasks.append(enrich_tables_task())
+        
+        # Apply enrichment in parallel
+        if enrichment_tasks:
+            await asyncio.gather(*enrichment_tasks)
+    else:
+        logger.info("[BuildIndex] Skipping table/figure extraction (GROBID-only mode)")
 
     logger.info(f"[BuildIndex] Total text chunks prepared: {len(texts)}")
 
-    # Step 5: Create embeddings (optimized batch size for faster processing)
-    logger.info("[BuildIndex] Step 5: Creating embeddings...")
+    # Create embeddings (optimized batch size for faster processing)
+    logger.info("[BuildIndex] Creating embeddings...")
     try:
         # Use larger batch size for faster processing if we have many texts
         # Default batch_size=32, increase to 64 for better throughput (trade-off: more memory)
@@ -560,11 +448,11 @@ async def build_rag_index(pdf_path):
         embeddings = await asyncio.to_thread(embed_texts, texts, batch_size)
         logger.info(f"[BuildIndex] Embeddings created with shape: {embeddings.shape}")
     except Exception as e:
-        logger.error(f"[BuildIndex] Step 5 failed - Embedding creation error: {str(e)}\n{traceback.format_exc()}")
+        logger.error(f"[BuildIndex] Embedding creation error: {str(e)}\n{traceback.format_exc()}")
         raise
     
-    # Step 6: Build vector index (RAG) - run in thread pool for async
-    logger.info("[BuildIndex] Step 6: Building vector index...")
+    # Build vector index (RAG) - run in thread pool for async
+    logger.info("[BuildIndex] Building vector index...")
     try:
         def build_index():
             index = VectorIndex(embeddings.shape[1])
@@ -574,11 +462,11 @@ async def build_rag_index(pdf_path):
         index = await asyncio.to_thread(build_index)
         logger.info(f"[BuildIndex] Vector index built successfully with {len(index.texts)} entries")
     except Exception as e:
-        logger.error(f"[BuildIndex] Step 6 failed - Index building error: {str(e)}\n{traceback.format_exc()}")
+        logger.error(f"[BuildIndex] Index building error: {str(e)}\n{traceback.format_exc()}")
         raise
 
-    # Step 7: Save to cache (run in background thread to not block)
-    logger.info("[BuildIndex] Step 7: Saving to cache...")
+    # Save to cache (run in background thread to not block)
+    logger.info("[BuildIndex] Saving to cache...")
     await asyncio.to_thread(save_cached_index, pdf_hash, index, embeddings)
 
     logger.info("[BuildIndex] RAG index build completed successfully")

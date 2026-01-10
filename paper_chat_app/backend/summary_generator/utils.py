@@ -1,104 +1,10 @@
-import camelot
-import tabula
-import pandas as pd
-
-import fitz
-import pytesseract
-from PIL import Image
-import os
-
-def extract_tables(pdf_path):
-    tables_text = []
-
-    # Camelot (best for vector PDFs)
-    try:
-        tables = camelot.read_pdf(pdf_path, pages="all")
-        for i, t in enumerate(tables):
-            tables_text.append(f"Table {i+1}:\n{t.df.to_string(index=False)}")
-    except Exception:
-        pass
-
-    # Tabula fallback
-    try:
-        dfs = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
-        for i, df in enumerate(dfs):
-            tables_text.append(f"Table (Tabula) {i+1}:\n{df.to_string(index=False)}")
-    except Exception:
-        pass
-
-    return tables_text
-
-
-def extract_figures(pdf_path, out_dir="figures"):
-    """
-    Extract figures from PDF and return image paths for multimodal analysis.
-    This follows the architecture: Figures → extracted images → Multimodal GPT
-    
-    Args:
-        pdf_path: Path to PDF file
-        out_dir: Directory to save extracted images
-        
-    Returns:
-        List of image file paths
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    doc = fitz.open(pdf_path)
-    figure_paths = []
-
-    for i, page in enumerate(doc):
-        images = page.get_images(full=True)
-        for j, img in enumerate(images):
-            xref = img[0]
-            pix = fitz.Pixmap(doc, xref)
-
-            if pix.n < 5:  # GRAY or RGB
-                img_path = f"{out_dir}/p{i}_img{j}.png"
-                pix.save(img_path)
-                figure_paths.append(img_path)
-
-            pix = None
-
-    doc.close()
-    return figure_paths
-
-
-def extract_figures_text(pdf_path, out_dir="figures"):
-    """
-    Legacy function: Extract figures and perform OCR.
-    For multimodal analysis, use extract_figures() instead.
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    doc = fitz.open(pdf_path)
-    figure_texts = []
-
-    for i, page in enumerate(doc):
-        images = page.get_images(full=True)
-        for j, img in enumerate(images):
-            xref = img[0]
-            pix = fitz.Pixmap(doc, xref)
-
-            if pix.n < 5:
-                img_path = f"{out_dir}/p{i}_img{j}.png"
-                pix.save(img_path)
-
-                text = pytesseract.image_to_string(Image.open(img_path))
-                if text.strip():
-                    figure_texts.append(
-                        f"Figure OCR (page {i+1}):\n{text.strip()}"
-                    )
-
-            pix = None
-
-    doc.close()
-    return figure_texts
-
-
-import requests
-from lxml import etree
 import os
 import time
 import logging
-from typing import Tuple
+from typing import Tuple, List
+
+import requests
+from lxml import etree
 
 logger = logging.getLogger(__name__)
 
@@ -311,10 +217,26 @@ def grobid_parse(pdf_path: str, max_retries: int = 3) -> dict:
 
 
 def parse_tei_xml(xml_text: str) -> dict:
+    """
+    Parse GROBID TEI XML to extract sections and figure/table captions.
+    
+    By default, GROBID only extracts captions for figures and tables, not their content.
+    For full content extraction, use separate methods (OCR or multimodal).
+    
+    Returns:
+        Dictionary with:
+        - 'sections': Dictionary mapping section titles to text content
+        - 'figure_captions': List of figure captions
+        - 'table_captions': List of table captions
+    """
     root = etree.XML(xml_text.encode())
     ns = {"tei": "http://www.tei-c.org/ns/1.0"}
 
     sections = {}
+    figure_captions = []
+    table_captions = []
+    
+    # Extract sections
     for div in root.findall(".//tei:body/tei:div", ns):
         head = div.find("tei:head", ns)
         title = head.text if head is not None else "Untitled"
@@ -323,5 +245,133 @@ def parse_tei_xml(xml_text: str) -> dict:
             for p in div.findall(".//tei:p", ns)
         ]
         sections[title] = "\n".join(paragraphs)
+    
+    # Extract figure captions
+    for figure in root.findall(".//tei:figure", ns):
+        fig_desc = figure.find("tei:figDesc", ns)
+        fig_head = figure.find("tei:head", ns)
+        if fig_head is not None and fig_head.text:
+            caption_text = fig_head.text.strip()
+            if fig_desc is not None and fig_desc.text:
+                caption_text += ": " + " ".join(fig_desc.itertext()).strip()
+            figure_captions.append(caption_text)
+        elif fig_desc is not None and fig_desc.text:
+            figure_captions.append(" ".join(fig_desc.itertext()).strip())
+    
+    # Extract table captions
+    for table in root.findall(".//tei:figure[@type='table']", ns):
+        fig_head = table.find("tei:head", ns)
+        if fig_head is not None and fig_head.text:
+            table_captions.append(fig_head.text.strip())
+    
+    # Also check for table elements directly
+    for table in root.findall(".//tei:table", ns):
+        table_head = table.find(".//tei:head", ns)
+        if table_head is not None and table_head.text:
+            table_captions.append(table_head.text.strip())
 
-    return sections
+    return {
+        "sections": sections,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions
+    }
+
+
+def select_important_tables_figures(
+    sections: dict,
+    tables: List[str],
+    figure_paths: List[str],
+    max_tables: int = 3,
+    max_figures: int = 3
+) -> Tuple[List[int], List[int]]:
+    """
+    Select important tables and figures based on heuristics:
+    - Mentioned in Abstract
+    - Mentioned in Conclusion
+    - Labeled "Main results"
+    - Contain SOTA comparisons or ablations
+    
+    Args:
+        sections: Dictionary of section titles to text (extracted from GROBID result)
+        tables: List of table content strings
+        figure_paths: List of figure image paths
+        max_tables: Maximum number of tables to select
+        max_figures: Maximum number of figures to select
+    
+    Returns:
+        Tuple of (selected_table_indices, selected_figure_indices)
+    """
+    
+    if not tables and not figure_paths:
+        logger.info("[Selection] No tables or figures to select")
+        return [], []
+    
+    # Build relevant text from Abstract, Conclusion, and main results sections
+    abstract_text = sections.get("Abstract", "").lower()
+    conclusion_text = sections.get("Conclusion", "").lower()
+    main_results_text = " ".join(
+        text.lower() for title, text in sections.items()
+        if "main result" in title.lower() or "main result" in text.lower()
+    )
+    all_relevant_text = f"{abstract_text} {conclusion_text} {main_results_text}"
+    
+    # Keywords for SOTA/ablation comparisons
+    sota_keywords = ["sota", "state-of-the-art", "state of the art", "best result", "competitive", "superior"]
+    ablation_keywords = ["ablation", "ablate", "ablation study", "ablation analysis"]
+    
+    def score_items(items, item_type="table"):
+        """Score items based on relevance heuristics"""
+        scores = []
+        for i, item in enumerate(items):
+            score = 0
+            item_lower = (item.lower() if isinstance(item, str) else str(item)).lower()
+            
+            # Check if item is mentioned in relevant sections
+            refs = (
+                [f"table {i+1}", f"table{i+1}", f"tab. {i+1}", f"tab.{i+1}"]
+                if item_type == "table"
+                else [f"figure {i+1}", f"figure{i+1}", f"fig. {i+1}", f"fig.{i+1}", f"fig {i+1}"]
+            )
+            for ref in refs:
+                if ref in all_relevant_text:
+                    score += 10
+                    logger.debug(f"[Selection] {item_type.capitalize()} {i+1} mentioned in Abstract/Conclusion/Main Results")
+            
+            if item_type == "table":
+                # Check for SOTA comparisons and ablations in table content
+                for keyword in sota_keywords + ablation_keywords:
+                    if keyword in item_lower:
+                        score += 5
+                        logger.debug(f"[Selection] Table {i+1} contains {keyword}")
+                if "main result" in item_lower:
+                    score += 8
+                    logger.debug(f"[Selection] Table {i+1} labeled as main results")
+            else:
+                # For figures, first few are often important
+                if i < 3:
+                    score += 2
+            
+            scores.append((score, i))
+        return scores
+    
+    def select_top_items(scores, max_items, item_type="table"):
+        """Select top items based on scores"""
+        if not scores:
+            return []
+        scores.sort(reverse=True, key=lambda x: x[0])
+        selected = [idx for score, idx in scores[:max_items] if score > 0]
+        if not selected:
+            selected = list(range(min(max_items, len(scores))))
+            logger.info(f"[Selection] No {item_type}s met criteria, selecting first {len(selected)}")
+        else:
+            logger.info(f"[Selection] Selected {len(selected)} important {item_type}s: {selected}")
+        return selected
+    
+    # Score and select tables and figures
+    table_scores = score_items(tables, "table")
+    figure_scores = score_items(figure_paths, "figure")
+    
+    selected_tables = select_top_items(table_scores, max_tables, "table")
+    selected_figures = select_top_items(figure_scores, max_figures, "figure")
+    
+    return selected_tables, selected_figures
