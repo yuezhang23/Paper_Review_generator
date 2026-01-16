@@ -1,0 +1,27 @@
+{
+  "title": "Methodology title",
+  "legend": {
+    "key_term_1": "Description",
+    "key_term_2": "Description"
+  },
+  "nodes": [
+    {
+      "id": "S1",
+      "label": "Step 1: ...",
+      "type": "setup|meta_prompt|optimizer_action|scorer_action|update|loop_control|final",
+      "key_components": ["component1", "component2"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "S1",
+      "to": "S2",
+      "type": "arrow|loop",
+      "label": "optional label"
+    }
+  ],
+  "must_not_change": [
+    "Critical constraint 1",
+    "Critical constraint 2"
+  ]
+}
