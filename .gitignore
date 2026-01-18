@@ -75,6 +75,4 @@ node_modules/
 
 # Generated images and reviews
 paper_chat_app/backend/images/
-paper_chat_app/backend/image_methodos_generator/images/
 paper_chat_app/backend/reviews/
-paper_chat_app/backend/image_methodos_generator/images/

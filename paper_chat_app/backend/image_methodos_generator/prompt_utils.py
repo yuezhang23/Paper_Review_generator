@@ -164,4 +164,3 @@ def get_max_step_number(text: str) -> Optional[int]:
 #         fallback = text[-5000:]
 #         return (fallback, _get_max_step_number(fallback))
 #     return (text, _get_max_step_number(text))
-

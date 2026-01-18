@@ -1,0 +1,28 @@
+Here is a detailed, step-by-step interpretation of the ProTeGi (Prompt Optimization with Textual Gradients) methodology, designed for clarity and visualization.
+
+***
+
+### **The ProTeGi Algorithm: A Step-by-Step Breakdown**
+
+This methodology outlines an automated process for refining Large Language Model (LLM) prompts. It mimics the logic of gradient descent from traditional machine learning but uses natural language feedback instead of numerical calculations. The entire process is structured as a beam search, allowing it to explore multiple promising prompt variations simultaneously.
+
+**Step 1: Initialization and Setup**  
+The process begins with a single, human-written "seed" prompt (p₀), which includes a task description and two fixed few-shot examples. This initial prompt is placed into a "beam," which is essentially a small collection of the best-performing prompts, with a set size (beam width `b`) of 4. This beam is the starting point for an iterative optimization loop that runs for 6 cycles.
+
+**Step 2: Error Identification**  
+For each prompt currently in the beam, the algorithm tests its performance on a random "minibatch" of 64 examples from the training data. The LLM (gpt-3.5-turbo) makes predictions, and the algorithm collects groups of 4 incorrect classifications, or "errors." These specific errors provide the raw material for the next step, ensuring the feedback is grounded in actual performance failures.
+
+**Step 3: Generating "Textual Gradients"**  
+This is the core innovation. The algorithm feeds the current prompt and the group of errors into a specialized "feedback prompt" (∆). This instructs the LLM to act as a critic, generating `m=4` distinct natural language explanations for *why* the prompt failed on those examples. These explanations are called "textual gradients" (g) because they provide a semantic direction for improvement, much like a numerical gradient points toward an area of loss.
+
+**Step 4: Editing the Prompt with Gradient Feedback**  
+Each textual gradient is then used to guide the improvement process. The original prompt, the errors, and a single gradient are fed into an "editing prompt" (δ). This instructs the LLM to rewrite the prompt to fix the specific flaw identified by the gradient. This step generates `4` new "successor" prompts (p′) for each gradient. To manage computational costs, the algorithm randomly samples just 8 of these new candidates to move forward.
+
+**Step 5: Expanding the Search with Paraphrasing**  
+To ensure a thorough exploration of the semantic space, the algorithm diversifies the newly generated prompts. Each of the 8 successor prompts is run through a paraphrasing LLM, which generates `p=2` semantically similar but differently worded variations (p″). This "Monte Carlo" step helps discover alternative phrasings that might be more effective. All successor prompts and their paraphrases are collected into a large pool of candidates.
+
+**Step 6: Selecting the Best Prompts with a Bandit Algorithm**  
+Now, the algorithm must efficiently identify the most promising candidates from the expanded pool without exhaustively testing each one. It treats this as a "best arm identification" problem, where each prompt is a "slot machine arm" and the goal is to find the best ones with the fewest "pulls" (evaluations). Using an algorithm like UCB-E or Successive Rejects, it intelligently allocates a limited evaluation budget (queries on random data samples) to quickly estimate the F1 score of each candidate. The top 4 prompts with the highest estimated scores are selected to form the new beam for the next iteration.
+
+**Step 7: Iteration and Final Selection**  
+The process loops back to Step 2 with the newly selected beam of prompts. This entire cycle repeats for 6 optimization steps. After the final iteration, the single best prompt from the final beam is chosen based on its performance on a held-out test set of 150 examples. The entire experiment is repeated 3 times, and the final reported result is the average F1 score across these trials.

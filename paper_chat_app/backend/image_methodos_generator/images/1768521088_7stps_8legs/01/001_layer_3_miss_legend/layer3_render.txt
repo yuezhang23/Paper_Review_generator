@@ -1,0 +1,37 @@
+Create a highly detailed academic infographic in a single-page landscape canvas (wide format, 16:9 aspect ratio) illustrating the ProTeGi (Prompt Optimization with Textual Gradients) methodology as a central clockwise loop architecture. Use a clean, professional visual style with vibrant colors, sans-serif fonts (e.g., Arial or Helvetica), subtle shadows on boxes for depth, thin grid lines for alignment, and ample white space. The overall layout features initialization on the far left (R_initial), a prominent clockwise optimization loop spanning top-left to bottom-center (R_loop_entry → R_gradients → R_editing → R_paraphrase → R_selection), and final evaluation on the far right (R_final). Position elements precisely in these regions with rounded rectangular boxes (200-250px wide, 120-150px tall) containing step labels as bold headers and exact key_components as bullet points below.
+
+Title: Place "ProTeGi (Prompt Optimization with Textual Gradients)" at the top center in large bold font (48pt, black), spanning the full width with a subtle gradient background bar (light blue to white).
+
+Step boxes (exact content, no changes):
+- S1 (left region, sea green #2E8B57 background, 🚀 icon top-left): "Step 1: Initialization and Setup" header; bullets: "seed prompt p₀", "beam width b=4", "6 optimization cycles".
+- S2 (top-left region, dark orange #FF8C00 background, 🔍 icon): "Step 2: Error Identification" header; bullets: "minibatch of 64 examples", "gpt-3.5-turbo", "groups of 4 errors".
+- S3 (top-center region, blue violet #8A2BE2 background, 🧠 icon): "Step 3: Generating Textual Gradients" header; bullets: "feedback prompt ∆", "m=4 textual gradients (g)", "LLM as critic".
+- S4 (top-right region, dodger blue #1E90FF background, ✍️ icon): "Step 4: Editing the Prompt with Gradient Feedback" header; bullets: "editing prompt δ", "4 successor prompts (p′) per gradient", "random sample of 8 candidates".
+- S5 (bottom-right region, dodger blue #1E90FF background, ✍️ icon): "Step 5: Expanding the Search with Paraphrasing" header; bullets: "paraphrasing LLM", "p=2 paraphrases (p″) per successor", "candidate pool".
+- S6 (bottom-center region, crimson #DC143C background, 🏆 icon): "Step 6: Selecting the Best Prompts with a Bandit Algorithm" header; bullets: "best arm identification", "UCB-E or Successive Rejects", "F1 score estimation", "select top 4 for new beam".
+- S7 (right region, saddle brown #8B4513 background, 🔄 icon): "Step 7: Iteration and Final Selection" header; bullets: "6 optimization steps", "held-out test set of 150 examples", "3 experiment repeats", "average F1 score".
+
+Arrows (thick 4px, matching source box color, with curved segments for flow, white text labels on arrows):
+- Straight arrow from S1 rightward to S2, labeled "Start Loop".
+- Straight arrow from S2 rightward to S3.
+- Straight arrow from S3 rightward to S4.
+- Straight arrow from S4 downward to S5.
+- Straight arrow from S5 leftward to S6.
+- Bold clockwise loop arrow from S6 upward-curving back to S2, prominent dashed outline encircling the loop (S2-S3-S4-S5-S6), labeled "Repeat 6 times".
+- Downward-straight arrow from S6 rightward to S7, labeled "After final iteration".
+
+Callouts (small curved speech bubbles with thin lines pointing to boxes, yellow background, black text):
+- Attach to S1: "Fixed beam width b=4".
+- Attach to S2: "Groups of 4 errors from 64-example minibatch".
+- Attach to S3: "Innovation: LLM-generated textual gradients".
+- Attach to S6: "UCB-E Bandit Algorithm".
+- Attach to S7: "Final F1 on 150 held-out examples".
+
+Legend: Bottom-left corner, compact table with 8 rows matching the 8 legend items exactly ("seed prompt: Initial human-written prompt with task description and two fixed few-shot examples.", "beam: A collection of the current best-performing prompts, with a fixed size (b=4).", etc.), using small icons/symbols (e.g., seed icon for seed prompt) and tiny color swatches.
+
+Visual rules for accuracy (do not invent or alter):
+- Use exact numbers/colors/symbols: beam b=4, 6 cycles, minibatch 64, groups of 4 errors, m=4 gradients, 8 candidates sampled, p=2 paraphrases, test set 150 examples, 3 repeats.
+- This is a beam search process; emphasize the loop as the core optimization cycle.
+- No text outside specified labels/bullets/legends/callouts/arrow labels.
+- Boxes aligned horizontally/vertically in regions, loop visually dominant with a subtle glow.
+- High-resolution, vector-sharp, academic-poster quality, no clutter, ensure all text is readable at 100% zoom.

@@ -1,0 +1,110 @@
+An academic infographic workflow diagram, single-page landscape canvas, clean and professional style. The diagram illustrates the "OPRO: Optimization by PROmpting Methodology". The overall aesthetic is minimalist, using a sans-serif font like Arial or Montserrat, with a light gray background and subtle grid lines for alignment. The layout flows from left to right, divided into three main regions.
+
+The title at the top center of the canvas reads "OPRO: Optimization by PROmpting Methodology" in a large, bold, black font.
+
+The layout is structured into three vertical regions:
+1.  **Left Region (Setup):** Contains the initial step of the process.
+2.  **Center Region (Optimization Loop):** Features a large, prominent clockwise iterative loop, which is the core of the methodology.
+3.  **Right Region (Finalization):** Contains the concluding steps of the workflow.
+
+**Content Boxes and Icons:**
+Each step is represented by a rounded rectangle with a colored border, a specific icon, a bolded label, and a list of key components as bullet points.
+
+*   **S1: Step 1: Initial Setup and Configuration**
+    *   **Position:** Left region.
+    *   **Visuals:** Green border (#4CAF50), icon of interlocking gears.
+    *   **Key Components:**
+        *   Task Definition
+        *   Training Dataset
+        *   Initial Instruction
+        *   Optimizer LLM Selection
+        *   Scorer LLM Selection
+
+*   **S2: Step 2: The Iterative Optimization Loop**
+    *   **Position:** Center region, acting as a container or large banner for the loop.
+    *   **Visuals:** Blue border (#2196F3), icon of circular loop arrows.
+    *   **Key Components:**
+        *   Meta-Prompt Construction
+        *   Instruction Generation
+        *   Instruction Evaluation
+        *   Trajectory Update
+
+*   **S2.1: Substep 2.1: Construct the Meta-Prompt**
+    *   **Position:** Inside the S2 loop, top-right.
+    *   **Visuals:** Orange border (#FF9800), icon of a document with a prompt symbol.
+    *   **Key Components:**
+        *   Optimization Trajectory (Best performers)
+        *   Task Exemplars
+        *   Meta-Instructions
+
+*   **S2.2: Substep 2.2: Generate a Batch of New Instructions**
+    *   **Position:** Inside the S2 loop, bottom-right.
+    *   **Visuals:** Purple border (#9C27B0), icon of a brain with a lightbulb.
+    *   **Callout:** A small text box attached points to this step, reading: "Optimizer LLM generates new instructions with high creativity (temperature)."
+    *   **Key Components:**
+        *   Optimizer LLM
+        *   Meta-Prompt
+        *   High Temperature Setting
+
+*   **S2.3: Substep 2.3: Evaluate New Instructions**
+    *   **Position:** Inside the S2 loop, bottom-left.
+    *   **Visuals:** Red border (#F44336), icon of a checklist or scorecard.
+    *   **Callout:** A small text box attached points to this step, reading: "A separate Scorer LLM evaluates accuracy on a training sample."
+    *   **Key Components:**
+        *   Scorer LLM
+        *   Training Set Sample
+        *   Accuracy Calculation
+
+*   **S2.4: Substep 2.4: Update the Trajectory**
+    *   **Position:** Inside the S2 loop, top-left.
+    *   **Visuals:** Orange border (#FF9800), icon of a list or historical log.
+    *   **Key Components:**
+        *   New Instructions
+        *   Calculated Scores
+        *   Historical List Append
+
+*   **S3: Step 3: Termination and Final Selection**
+    *   **Position:** Right region, top.
+    *   **Visuals:** Blue border (#2196F3), icon of a trophy.
+    *   **Callout:** A small text box attached points to this step, reading: "Crucially, selects the best instruction from the *entire* history, not just the last batch."
+    *   **Key Components:**
+        *   Stopping Condition Check
+        *   Complete Optimization Trajectory
+        *   Highest Score Selection
+
+*   **S4: Step 4: Final Validation on Test Data**
+    *   **Position:** Right region, bottom.
+    *   **Visuals:** Green border (#4CAF50), icon of a test flask or beaker.
+    *   **Key Components:**
+        *   Optimized Instruction
+        *   Unseen Test Set
+        *   Final Test Accuracy
+
+**Arrows and Connections:**
+Arrows are thick and clearly labeled to guide the viewer through the workflow.
+
+*   A straight arrow from **S1** to **S2** labeled "Initial trajectory".
+*   An arrow from the **S2** container enters the loop at **S2.1**, labeled "Start iteration with current trajectory".
+*   Inside the loop, arrows connect the substeps in a clockwise direction:
+    *   **S2.1** to **S2.2** labeled "Meta-prompt".
+    *   **S2.2** to **S2.3** labeled "Batch of new instructions".
+    *   **S2.3** to **S2.4** labeled "New instructions with scores".
+    *   A looping return arrow from **S2.4** back to **S2.1** labeled "Updated trajectory for next iteration".
+*   A straight arrow exits the **S2** loop and points to **S3**, labeled "Stopping condition met".
+*   A final straight arrow connects **S3** to **S4**, labeled "Single best instruction".
+
+**Legend:**
+A legend is placed at the bottom of the infographic, clearly defining the key concepts with their associated colors/icons.
+
+*   **Optimizer LLM:** (Purple brain icon) LLM responsible for generating new candidate instructions based on past performance.
+*   **Scorer LLM:** (Red checklist icon) LLM responsible for evaluating the performance (accuracy) of newly generated instructions.
+*   **Optimization Trajectory:** (Orange list icon) The historical list of all generated instructions and their corresponding accuracy scores, which informs subsequent generations.
+*   **Meta-Prompt:** (Orange document icon) A structured prompt given to the Optimizer LLM, constructed from the optimization trajectory, task exemplars, and meta-instructions.
+*   **Task Exemplars:** (Green dataset icon) A small, random sample of problems from the training set to provide task context to the Optimizer LLM.
+
+**Important Rules for Accuracy:**
+*   The iterative nature of the central loop must be visually clear, with the return arrow from S2.4 to S2.1 being prominent.
+*   The distinction between the Optimizer LLM (generation, purple) and the Scorer LLM (evaluation, red) must be maintained through consistent color-coding and iconography.
+*   The composition of the Meta-Prompt (S2.1) must visually suggest the combination of trajectory, exemplars, and instructions.
+*   The final selection step (S3) must be linked to the entire historical trajectory, as highlighted by its callout.
+*   The flow must strictly follow the S1 -> S2 (loop) -> S3 -> S4 sequence.

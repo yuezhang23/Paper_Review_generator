@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import re
 from typing import Tuple, List
 
 import requests
@@ -375,3 +376,119 @@ def select_important_tables_figures(
     selected_figures = select_top_items(figure_scores, max_figures, "figure")
     
     return selected_tables, selected_figures
+
+
+def extract_metadata_from_grobid_api(pdf_path: str) -> dict:
+    """
+    Extract paper metadata (title, authors, year, venue) from PDF using GROBID API.
+    
+    Args:
+        pdf_path: Path to PDF file
+        
+    Returns:
+        Dictionary with keys: title, authors (list), year, venue
+    """
+    try:
+        # Get GROBID URL
+        grobid_url = get_grobid_url()
+        base_url = grobid_url.replace("/api/processFulltextDocument", "")
+        
+        # Check if GROBID is available
+        is_available, error_msg = check_grobid_available()
+        if not is_available:
+            logger.warning(f"[Metadata] GROBID not available: {error_msg}")
+            return {
+                "title": "Unknown Title",
+                "authors": [],
+                "year": "N/A",
+                "venue": "N/A"
+            }
+        
+        # Call GROBID API to get TEI XML
+        session = get_session()
+        with open(pdf_path, "rb") as f:
+            response = session.post(
+                grobid_url,
+                files={"input": f},
+                data={"consolidateHeader": "1"},
+                timeout=(10, 300)
+            )
+        response.raise_for_status()
+        
+        # Parse TEI XML to extract metadata
+        xml_text = response.text
+        root = etree.XML(xml_text.encode())
+        ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+        
+        # Extract title from teiHeader
+        title_elem = root.find(".//tei:titleStmt/tei:title[@type='main']", ns)
+        if title_elem is None:
+            title_elem = root.find(".//tei:titleStmt/tei:title", ns)
+        title = " ".join(title_elem.itertext()).strip() if title_elem is not None else "Unknown Title"
+        
+        # Extract authors
+        authors = []
+        for author in root.findall(".//tei:sourceDesc//tei:author", ns):
+            first_names = []
+            last_names = []
+            
+            # Extract first name
+            first_elem = author.find(".//tei:forename", ns)
+            if first_elem is not None:
+                first_names.append(" ".join(first_elem.itertext()).strip())
+            
+            # Extract last name
+            last_elem = author.find(".//tei:surname", ns)
+            if last_elem is not None:
+                last_names.append(" ".join(last_elem.itertext()).strip())
+            
+            # Combine first and last name
+            if first_names or last_names:
+                author_name = " ".join(first_names + last_names).strip()
+                if author_name:
+                    authors.append(author_name)
+        
+        # Extract year from publication date
+        date_elem = root.find(".//tei:sourceDesc//tei:date[@type='published']", ns)
+        if date_elem is None:
+            date_elem = root.find(".//tei:sourceDesc//tei:date", ns)
+        year = "N/A"
+        if date_elem is not None:
+            date_text = " ".join(date_elem.itertext()).strip()
+            # Try to extract year (4 digits)
+            year_match = re.search(r'\b(19|20)\d{2}\b', date_text)
+            if year_match:
+                year = year_match.group(0)
+        
+        # Extract venue/conference from sourceDesc
+        venue = "N/A"
+        biblscope_elem = root.find(".//tei:sourceDesc//tei:biblScope[@unit='journal']", ns)
+        if biblscope_elem is None:
+            biblscope_elem = root.find(".//tei:sourceDesc//tei:biblScope[@unit='conference']", ns)
+        if biblscope_elem is not None:
+            venue = " ".join(biblscope_elem.itertext()).strip()
+        
+        # If venue not found, try to extract from titleStmt/note
+        if venue == "N/A":
+            note_elem = root.find(".//tei:titleStmt/tei:note[@type='venue']", ns)
+            if note_elem is not None:
+                venue = " ".join(note_elem.itertext()).strip()
+        
+        metadata = {
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "venue": venue
+        }
+        
+        logger.info(f"[Metadata] Extracted metadata: title={title}, authors={len(authors)}, year={year}, venue={venue}")
+        return metadata
+        
+    except Exception as e:
+        logger.warning(f"[Metadata] Failed to extract metadata from GROBID: {str(e)}")
+        return {
+            "title": "Unknown Title",
+            "authors": [],
+            "year": "N/A",
+            "venue": "N/A"
+        }

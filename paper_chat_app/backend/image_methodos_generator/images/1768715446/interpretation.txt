@@ -1,0 +1,52 @@
+**Step 1: Initial Setup and Configuration**
+
+The process begins by defining the core components for the optimization task. This foundational step sets the stage for the iterative discovery of the best prompt.
+
+*   **Input:** A specific task (e.g., `ruin_names` from the BBH benchmark), a training dataset for that task, and an initial, often simple, instruction.
+*   **Process:** Researchers select an **Optimizer LLM** (like PaLM 2-L-IT or gpt-3.5-turbo) responsible for creating new prompts and a **Scorer LLM** (like text-bison) responsible for evaluating them. They also choose a starting point for the optimization, which is typically a very basic or even "empty string" instruction with a known low accuracy score.
+*   **Output:** An initial "optimization trajectory" containing just the starting instruction and its corresponding low accuracy score.
+
+***
+
+**Step 2: The Iterative Optimization Loop**
+
+This is the core of the OPRO method, where the Optimizer LLM repeatedly refines and generates better instructions based on past performance. This loop continues until a stopping condition is met.
+
+*   **Input for the Loop:** The current optimization trajectory, which is the history of all previously generated instructions and their performance scores.
+
+    *   **Substep 2.1: Construct the Meta-Prompt**
+        The Optimizer LLM is not just asked to create a prompt out of thin air; it's given a carefully constructed "meta-prompt" to guide its generation. This meta-prompt is assembled by combining:
+        1.  **Optimization Trajectory:** The best-performing instructions found so far (e.g., the top 20), paired with their accuracy scores and sorted from lowest to highest score. This shows the model what has worked well and what hasn't.
+        2.  **Task Exemplars:** A few random examples from the training set (e.g., 3 examples) to give the optimizer context on the actual task it's creating an instruction for.
+        3.  **Meta-Instructions:** A direct command telling the Optimizer LLM its goal, such as "generate a new instruction that achieves a higher accuracy."
+
+    *   **Substep 2.2: Generate a Batch of New Instructions**
+        The Optimizer LLM receives the meta-prompt and generates a batch of new candidate instructions (e.g., 8 new instructions). A high "temperature" setting (e.g., 1.0) is used to encourage creativity and exploration, preventing the model from getting stuck on minor variations of the same idea.
+
+    *   **Substep 2.3: Evaluate New Instructions**
+        Each of the newly generated instructions is evaluated. The **Scorer LLM** is prompted with each new instruction to solve a sample of problems from the training set. The resulting accuracy is calculated, serving as the "score" for that instruction.
+
+    *   **Substep 2.4: Update the Trajectory**
+        The new instructions and their calculated scores are added to the historical list. This updated optimization trajectory now contains more information for the next iteration.
+
+*   **Output of the Loop:** The process returns to Substep 2.1, using the newly expanded trajectory to build an even more informed meta-prompt for the next generation of instructions.
+
+***
+
+**Step 3: Termination and Final Selection**
+
+The iterative loop does not run indefinitely. Once the process is complete, the single best instruction is identified.
+
+*   **Input:** The complete optimization trajectory containing all instructions generated across all iterations.
+*   **Process:** The loop terminates when a predefined condition is met, such as reaching a maximum number of steps (e.g., 200) or when the optimizer consistently fails to generate instructions that improve upon the current best score. The instruction with the highest overall training accuracy is then selected from the entire history.
+*   **Output:** The single, optimized instruction that performed best on the training data throughout the entire process. For the `ruin_names` task, an example of a highly optimized instruction is: *"Choose the option that offers the most clever and humorous alteration of the given artist or movie name. Let your creativity shine and select the answer that will undoubtedly bring a smile to your face! Make sure to think outside the box!"*
+
+***
+
+**Step 4: Final Validation on Test Data**
+
+To ensure the optimized prompt is genuinely effective and not just "overfitted" to the training examples, it is validated on a separate, unseen dataset.
+
+*   **Input:** The single best instruction selected in Step 3 and the official test set for the task.
+*   **Process:** The performance of the final, optimized instruction is measured on the test set.
+*   **Output:** A final test accuracy score, which confirms the instruction's ability to generalize and effectively guide an LLM on new, unseen problems. The research shows that this method consistently finds instructions that significantly outperform human-designed baselines like "Let's think step by step."

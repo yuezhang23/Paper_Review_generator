@@ -27,14 +27,24 @@ logger = logging.getLogger(__name__)
 # Import from parent utils module (not summary_generator/utils)
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from .summary_utils import extract_metadata_from_grobid_api
 from utils import file_storage, UPLOAD_DIR
 from openreview_service import fetch_and_save_openreview_paper, parse_openreview_info_from_text
 
 # Import from summary_generator modules
 from .embeddings import embed_texts, build_rag_index, VectorIndex
-from summary_generator.summary_utils import grobid_parse, parse_tei_xml, REVIEW_QUERIES
+from .utils import grobid_parse, parse_tei_xml, extract_metadata_from_grobid_api
 from .cache import get_pdf_hash, load_cached_index
+
+# Review queries for summary generation
+REVIEW_QUERIES = {
+    "summary": "Provide a comprehensive summary of the paper, including the main problem, approach, and key results.",
+    "strengths": "What are the main strengths of this paper? Highlight well-executed experiments, clear contributions, and strong methodological choices.",
+    "weaknesses": "What are the main weaknesses or limitations of this paper? Identify areas that need improvement or concerns about the methodology, evaluation, or presentation.",
+    "innovations": "What are the key innovations or novel contributions of this paper? What makes it different from prior work?",
+    "contributions": "What are the specific contributions of this paper to the field? List both technical and conceptual contributions.",
+    "limitations": "What are the limitations, open questions, or ambiguities in this paper? What aspects need further investigation?",
+    "rating": "Provide a rating assessment of this paper. Consider significance, novelty, technical quality, clarity, and reproducibility. Provide a score (e.g., 1-10) with justification."
+}
 # SECTION_ANCHOR_QUERIES and DETAIL_SEEKING_QUERIES moved to image_method_generator.py
 
 # Create router for summary endpoints

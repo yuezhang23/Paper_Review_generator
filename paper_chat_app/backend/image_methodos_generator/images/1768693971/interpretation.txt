@@ -1,0 +1,46 @@
+Of course. Here is a detailed step-by-step interpretation of the ProTeGi (Prompt Optimization with Textual Gradients) methodology based on the provided research content.
+
+### The ProTeGi Methodology: A Step-by-Step Interpretation
+
+This methodology outlines an automated process for refining an initial LLM prompt to improve its performance on a specific task. The core idea is to mimic the mathematical process of gradient descent using natural language, where "gradients" are text descriptions of a prompt's flaws, and "backpropagation" is an LLM editing the prompt to fix those flaws. This is all managed within an iterative beam search framework to efficiently explore the space of possible prompts.
+
+***
+
+**Step 1: Setup and Initialization**
+
+The process begins by defining the initial conditions and parameters for the optimization. An engineer provides a simple, first-draft prompt (`p₀`), and a dataset is prepared by sampling 50 examples for development and 150 for testing. The algorithm is initialized with a "beam" containing only this single starting prompt.
+
+*   **Input:** An initial prompt (`p₀`), a dataset, and a performance metric (F1 score).
+*   **Key Parameters:** Beam width `b=4` (how many top prompts to keep each round), and search depth `r=6` (how many optimization rounds to run).
+*   **Output:** An initial "beam" `B₀` containing only the starting prompt `p₀`.
+
+**Step 2: The Iterative Optimization Loop (Beam Search)**
+
+The algorithm enters its main loop, which runs for a predefined number of iterations (`r=6`). In each iteration, the prompts currently in the beam are used to generate a new, larger set of improved candidate prompts (Expansion), from which the best-performing ones are chosen to form the beam for the next iteration (Selection).
+
+*   **Input:** The current beam of prompts (starting with `B₀` in the first iteration).
+*   **Process:** This loop consists of two main phases: Expansion and Selection, repeated `r-1` times.
+*   **Output:** A final beam of `b` optimized prompts after the last iteration.
+
+    *   **Substep 2.1: Expansion Phase (Generating New Prompts)**
+        This phase generates a diverse set of new candidate prompts from each prompt currently in the beam, using the core "textual gradient descent" technique.
+
+        *   **2.1.1: Error Identification:** The current prompt is run on a random minibatch of 64 training examples, and the instances where it produces an incorrect output (errors) are collected.
+        *   **2.1.2: Textual "Gradient" Generation:** Groups of 4 errors are fed into a specialized LLM prompt (`∇`). This prompt asks the LLM to act as an analyzer, generating `m=4` natural language descriptions of the original prompt's flaws that could have caused these specific errors. These text descriptions are the "textual gradients" (`g`).
+        *   **2.1.3: Prompt Editing:** Each textual gradient (`g`) is then combined with the original prompt and fed into a second specialized LLM prompt (`δ`). This prompt instructs the LLM to act as an editor, rewriting the original prompt to fix the flaw described in the gradient, producing a new, improved prompt candidate (`p'`).
+        *   **2.1.4: Monte Carlo Paraphrasing:** To further explore the semantic neighborhood, each newly edited prompt (`p'`) is passed to a third LLM prompt. This prompt generates `p=2` paraphrased versions that are semantically similar but worded differently, adding more variety to the candidate pool.
+
+    *   **Substep 2.2: Selection Phase (Choosing the Best Candidates)**
+        This phase efficiently identifies the `b` most promising prompts from the large pool of candidates generated during expansion, without the high cost of a full evaluation. This is framed as a "best arm identification" problem.
+
+        *   **Input:** A large set of new candidate prompts (in the paper, 8 successors are randomly sampled per parent prompt to manage computational cost).
+        *   **Process:** A bandit algorithm (such as UCB or Successive Rejects) is used to intelligently estimate the F1 score of each candidate. It does this by evaluating them on small, random subsets of data, progressively allocating more evaluations to more promising candidates.
+        *   **Output:** The top `b=4` prompts with the highest estimated performance are selected. These four prompts form the new beam (`Bᵢ₊₁`) for the next iteration of the loop.
+
+**Step 3: Final Selection**
+
+After the main optimization loop completes all `r=6` iterations, the algorithm performs a final evaluation. The single prompt with the highest F1 score on the development set from the final beam is chosen as the best and final output of the entire process.
+
+*   **Input:** The final beam `Bᵣ` containing the top `b` prompts from the last iteration.
+*   **Process:** Each prompt in the final beam is evaluated on the development dataset.
+*   **Output:** The single, most effective prompt (`p*`) identified by the optimization process.

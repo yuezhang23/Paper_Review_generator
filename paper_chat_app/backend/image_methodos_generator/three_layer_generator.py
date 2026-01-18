@@ -286,41 +286,28 @@ Generate the complete layout layer JSON structure following the format and rules
         
         # Validate response structure
         if not response or not hasattr(response, 'choices') or not response.choices:
-            logger.error("Empty or invalid response from API")
-            logger.error(f"Response object: {response}")
             raise ValueError("Empty or invalid response from API")
         
         if not hasattr(response.choices[0], 'message') or not response.choices[0].message:
-            logger.error("Response missing message field")
-            logger.error(f"Response choices: {response.choices}")
             raise ValueError("Response missing message field")
         
         content = response.choices[0].message.content
         
         # Check if content is None or empty
         if content is None or not content.strip():
-            logger.error("Response content is None")
-            logger.error(f"Full response: {response}")
             raise ValueError("Response content is None")
         
         # Extract JSON from content (handles embedded JSON, markdown blocks, etc.)
         content = extract_json_from_content(content)
         
         layout_layer = json.loads(content)
-        logger.info("Layer 2 (Layout) generated successfully")
         return layout_layer
         
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON from Layer 2 response: {str(e)}")
-        logger.error(f"Response content: {content if 'content' in locals() else 'N/A'}")
-        logger.error(f"Response content length: {len(content) if 'content' in locals() and content else 0}")
         raise
     except ValueError as e:
-        logger.error(f"Validation error in Layer 2: {str(e)}")
         raise
     except Exception as e:
-        logger.error(f"Error generating Layer 2: {str(e)}")
-        logger.error(f"Exception type: {type(e).__name__}")
         raise
 
 

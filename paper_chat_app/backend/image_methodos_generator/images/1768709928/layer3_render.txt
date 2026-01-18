@@ -1,0 +1,32 @@
+Create a highly detailed academic infographic in a single-page landscape canvas format, depicting the "Optimization by PROmpting (OPRO)" methodology as a three-stage linear workflow from left to right. Use a clean, professional visual style with sans-serif fonts (e.g., Arial or Helvetica), subtle gradients, rounded rectangles for nodes, bold headings, and a vibrant yet academic color palette: setup and final stages in #4CAF50 (green), meta-prompt elements in #2196F3 (blue), optimizer actions in #FF9800 (orange), scorer actions in #F44336 (red), and loop control in #9C27B0 (purple). Ensure high contrast, no clutter, ample white space, and precise alignment on a light gray background grid. Title "Optimization by PROmpting (OPRO)" at the top center in large bold font (72pt, black).
+
+Divide the canvas into three horizontal regions from left to right:
+
+- Left region (R_Setup, 25% width): Contains single rectangular node "S1: Step 1: Initial Setup and Scorer/Optimizer Designation" (green #4CAF50 border and fill, gear-icon top-left). Inside, bullet points: "optimizer LLM", "scorer LLM", "training dataset", "initial prompts".
+
+- Center region (R_OptimizationLoop, 50% width): Depict as a prominent clockwise iterative loop. Top entry node "S2: Step 2: Iterative Optimization Loop" (purple #9C27B0 border, brain-icon). Below it, four substep nodes arranged clockwise:
+  - Top-right "S2.1: Substep 2.1: Construct the Meta-Prompt" (blue #2196F3, database-icon), bullets: "optimization trajectory", "task exemplars", "meta-instructions".
+  - Bottom-right "S2.2: Substep 2.2: Generate New Candidate Prompts" (orange #FF9800, brain-icon), bullets: "optimizer LLM", "meta-prompt", "high sampling temperature".
+  - Bottom-left "S2.3: Substep 2.3: Evaluate New Prompts" (red #F44336, checkmark-icon), bullets: "scorer LLM", "candidate prompts", "training dataset", "deterministic temperature (0.0)".
+  - Top-left "S2.4: Substep 2.4: Update the Optimization Trajectory" (purple #9C27B0, database-icon), bullets: "new prompts", "accuracy scores".
+
+- Right region (R_FinalTest, 25% width): Single rectangular node "S3: Step 3: Final Selection and Testing" (green #4CAF50 border and fill, target-icon top-left). Bullets: "best-performing prompt", "unseen test set".
+
+Arrows (thick, curved where specified, with white text labels in black-outlined boxes, matching color of source node):
+- Straight green arrow from S1 rightward to S2: label "Provides initial prompts and scores".
+- Straight purple arrow from S2 downward to S2.1: label "Start iteration".
+- Clockwise blue curved segment from S2.1 to S2.2: label "Feed meta-prompt to optimizer".
+- Clockwise orange curved segment from S2.2 to S2.3: label "Score new prompts".
+- Clockwise red curved segment from S2.3 to S2.4: label "Record results".
+- Thick purple return arrow (loop closure) from S2.4 curving back clockwise to S2.1: label "Iterate until stopping condition".
+- Straight green downward-then-right arrow from bottom of S2 to S3: label "Loop terminates".
+
+Add three callout bubbles (yellow with red exclamation icons, connected by thin dashed lines):
+- Attached to S2.1: "Meta-prompt includes optimization trajectory, exemplars, and instructions."
+- Attached to S2.3: "Critical: Scorer LLM must use temperature 0.0 for deterministic evaluation."
+- Attached to S3: "Critical: Final prompt is evaluated on a separate, unseen test set."
+- Attached to S2.2: "Critical: Optimizer LLM must use high temperature (e.g. 1.0) for variations."
+
+Bottom section (20% height): Legend as a horizontal table with two columns. Left column labels: "optimizer LLM", "scorer LLM", "meta-prompt", "optimization trajectory", "task exemplars". Right column descriptions: "A Large Language Model designated to generate new candidate prompts.", "A Large Language Model designated to evaluate the performance of prompts and assign accuracy scores.", "A master prompt that guides the optimizer LLM, containing the optimization trajectory, task exemplars, and meta-instructions.", "A historical list of the best-performing prompts and their corresponding accuracy scores, used to inform subsequent optimization steps.", "A few examples randomly sampled from the training set to show the optimizer the task format." Use matching color swatches.
+
+Rules for accuracy: Do not invent steps, alter labels, or change connections—exactly match node IDs, labels, bullets, edges, and colors specified. Emphasize two distinct LLM roles (optimizer vs. scorer) with different icons/colors. Loop must be strictly clockwise with S2 as entry/exit. Trajectory sorted ascending by scores (implied in visuals). No text overlap, perfect symmetry, scalable vector-like quality.

@@ -25,7 +25,7 @@ from utils import file_storage, get_ai_client
 # Import from summary_generator modules (updated path)
 from summary_generator.embeddings import embed_texts, VectorIndex
 from summary_generator.cache import get_pdf_hash, load_cached_index
-from summary_generator.methodology_utils import SECTION_ANCHOR_QUERIES, DETAIL_SEEKING_QUERIES
+from .methodology_utils import SECTION_ANCHOR_QUERIES, DETAIL_SEEKING_QUERIES
 
 # Import from image_optimizer
 from .image_optimizer import generate_and_save_image
@@ -234,7 +234,7 @@ async def generate_summary_image(request: ImageGenerationRequest):
         )
         return {
             "image_url": image_result["image_url"],
-            "revised_prompt": whiteboard_prompt,  # Note: generate_and_save_image doesn't return revised_prompt
+            "revised_prompt": whiteboard_prompt, 
             "methodology_steps": interpretation_preview
         }
 

@@ -1,0 +1,80 @@
+Create a highly detailed academic infographic in a clean, professional style for a methodology workflow diagram titled "ProTeGi Methodology". The title should be at the top center in a bold, large sans-serif font. The overall visual style is a single-page landscape canvas with a white background, using a vibrant and professional color palette. All nodes should be rounded rectangles with subtle drop shadows and high-contrast text. Use precise mathematical notation as specified (e.g., p₀, B_{i-1}, ∇, δ).
+
+**Layout Structure:**
+The diagram is a cyclical workflow with a distinct entry and exit.
+- **Initialization Region (Left):** Contains the single starting node, S1.
+- **Main Loop Region (Center):** This is the core of the diagram, arranged in a large, clockwise circle. S2 is at the top (12 o'clock). S3, S4, and S5 flow down the right side of the circle. S6 and S7 are at the bottom and lead back up the left side to S2.
+- **Finalization Region (Right):** Contains the single final node, S8, which is the exit point of the workflow.
+
+**Node Details (Content, Colors, and Icons):**
+
+- **S1 (Left, Deep Blue, 🏁 Icon):**
+  - Label: "Step 1: Initialize the beam with the initial prompt"
+  - Bullets: p₀, B₀ = {p₀}, beam width b, search depth r, |D_mini|, metric m
+
+- **S2 (Top of central loop, Vibrant Orange, 🔍 Icon):**
+  - Label: "Step 2: Sample minibatch and identify errors"
+  - Bullets: D_mini ⊂ D_tr, LLM (temp=0.0), errors e, error groups
+
+- **S3 (Right side of loop, Creative Purple, ⚙️ Icon):**
+  - Label: "Step 3: Generate textual gradients g using feedback prompt ∇"
+  - Bullets: ∇ prompt, error group e, current prompt p, g (semantic loss)
+  - Callout attached to this node: "The gradient prompt ∇ is fixed and task-agnostic."
+
+- **S4 (Right side of loop, Creative Purple, ⚙️ Icon):**
+  - Label: "Step 4: Edit prompts using incorporation prompt δ to create stepped candidates p′"
+  - Bullets: δ prompt, gradient g, p′ (directional edits)
+  - Callout attached to this node: "The editing prompt δ is fixed."
+
+- **S5 (Bottom-right of loop, Creative Purple, ⚙️ Icon):**
+  - Label: "Step 5: Expand candidates via Monte Carlo paraphrasing with LLM_mc"
+  - Bullets: paraphrasing prompt, LLM_mc (temp=1.0), p″, candidate pool C
+  - Callout attached to this node: "Paraphrasing is a directionless local search (high temp)."
+
+- **S6 (Bottom-left of loop, Stable Green, ⚖️ Icon):**
+  - Label: "Step 6: Perform bandit-based selection to prune to beam width b"
+  - Bullets: UCB/Successive Rejects, D_sample, metric m, B_i (top b prompts)
+  - Callout attached to this node: "Selection uses a bandit algorithm (e.g., UCB)."
+
+- **S7 (Left side of loop, Stable Green, 🔄 Icon):**
+  - Label: "Step 7: Iterate beam search for r steps"
+  - Bullets: i=1 to r-1, B_{i-1} → B_i
+
+- **S8 (Right, Deep Blue, 🏆 Icon):**
+  - Label: "Step 8: Finalize optimal prompt from final beam"
+  - Bullets: B_r, D_te, metric m, p* = argmax m(p, D_te)
+  - Callout attached to this node: "Final prompt p* is chosen based on a held-out test set D_te."
+
+**Arrow Connections:**
+- A straight arrow from S1 to S2, labeled "Start with B₀".
+- A straight arrow from S2 to S3, labeled "Errors e".
+- A straight arrow from S3 to S4, labeled "Gradients g".
+- A straight arrow from S4 to S5, labeled "Edited prompts p′".
+- A straight arrow from S5 to S6, labeled "Candidate pool C".
+- A straight arrow from S6 to S7, labeled "Updated beam Bᵢ".
+- A large, clockwise loop arrow originating from S7 and pointing back to S2, labeled "for i=1 to r-1".
+- A straight exit arrow from S7 to S8, labeled "After r iterations".
+
+**Legend:**
+Place a legend box at the bottom of the infographic with the following key-value pairs:
+- p₀: Initial human-written prompt
+- B_{i-1}: Current beam of prompts
+- D_mini: Minibatch from training data D_tr
+- e: Error datapoints (ŷ ≠ true label)
+- g: Textual gradients (semantic feedback)
+- p′: Edited successor prompts
+- p″: Paraphrased prompts
+- C: Candidate pool of all p' and p'' prompts
+- B_i: Selected beam for next iteration
+- p*: Final optimal prompt
+- ∇: Fixed gradient generation prompt
+- δ: Fixed editing prompt
+- LLM_mc: Monte Carlo paraphrasing LLM
+- m: Metric function (e.g., F1 score)
+
+**Important Rules for Accuracy:**
+- Do not invent any new steps or change the content of the nodes.
+- The workflow must be cyclical as described, with S7 looping back to S2.
+- The color coding (blue for start/end, orange for scoring, purple for optimization, green for update/control) must be followed exactly.
+- All specified icons, labels, bullet points, and callouts must be included and correctly placed.
+- Mathematical symbols and subscripts must be rendered accurately.
