@@ -27,8 +27,8 @@ from utils import get_ai_client
 
 # Reasoning model to use for generation
 REASONING_MODEL = "supermind-agent-v1"
-layer_1_json = json.load(open('image_methodos_generator/layer_1.json', 'r'))
-layer_2_json = json.load(open('image_methodos_generator/layer_2.json', 'r'))
+layer_1_json = json.load(open(os.path.join(os.path.dirname(__file__), 'layer_1_temp.json'), 'r'))
+layer_2_json = json.load(open(os.path.join(os.path.dirname(__file__), 'layer_2_temp.json'), 'r'))
 
 
 def extract_json_from_content(content: str) -> str:
@@ -167,16 +167,16 @@ Your task is to generate a JSON structure that represents the symbolic graph spe
 
 {methodology_text}
 
-
 Valid JSON Structure Example:
 {layer_1_json}
 
 Rules:
 1. Extract all steps from the methodology description
 2. Assign unique IDs (S1, S2, S3, etc.) to each step
-3. Identify the step type based on its function
-4. Extract key components for each step
-5. Map the flow between steps with edges
+3. Assign unique IDs (SN.1, SN.2, SN.3, etc.) to each substep SN.x
+3. Identify the step and substep types based on its function
+4. Extract key components for each step and each substep
+5. Map the flow between steps and substeps with edges
 6. Identify loops and iteration patterns
 7. Create a legend for important terms/concepts
 8. List critical constraints that must not change
@@ -184,7 +184,7 @@ Rules:
 
 Generate the complete JSON structure following the format and rules specified above."""
 
-    ai_client = get_ai_client()
+    ai_client = get_ai_client() 
     
     try:
         response = await asyncio.to_thread(
@@ -201,27 +201,18 @@ Generate the complete JSON structure following the format and rules specified ab
         
         # Validate response structure
         if not response or not hasattr(response, 'choices') or not response.choices:
-            logger.error("Empty or invalid response from API")
             logger.error(f"Response object: {response}")
             raise ValueError("Empty or invalid response from API")
         
         if not hasattr(response.choices[0], 'message') or not response.choices[0].message:
-            logger.error("Response missing message field")
             logger.error(f"Response choices: {response.choices}")
             raise ValueError("Response missing message field")
         
         content = response.choices[0].message.content
         
         # Check if content is None or empty
-        if content is None:
-            logger.error("Response content is None")
-            logger.error(f"Full response: {response}")
+        if content is None or not content.strip():
             raise ValueError("Response content is None")
-        
-        if not content.strip():
-            logger.error("Response content is empty")
-            logger.error(f"Response structure: {response}")
-            raise ValueError("Response content is empty")
         
         # Extract JSON from content (handles embedded JSON, markdown blocks, etc.)
         content = extract_json_from_content(content)
@@ -233,11 +224,8 @@ Generate the complete JSON structure following the format and rules specified ab
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON from Layer 1 response: {str(e)}")
-        logger.error(f"Response content: {content if 'content' in locals() else 'N/A'}")
-        logger.error(f"Response content length: {len(content) if 'content' in locals() and content else 0}")
         raise
     except ValueError as e:
-        logger.error(f"Validation error in Layer 1: {str(e)}")
         raise
     except Exception as e:
         logger.error(f"Error generating Layer 1: {str(e)}")
@@ -276,7 +264,7 @@ Rules:
 4. Plan arrow styles based on edge types (straight, loops, returns)
 5. Assign visual encoding (colors, icons) based on node types
 6. Add callouts for important details
-7. Ensure the layout is visually clear and follows logical flow
+7. Ensure the layout is visually clear, no overlapping nodes and follows logical flow
 8. Return ONLY valid JSON, no markdown formatting, no code blocks
 
 Generate the complete layout layer JSON structure following the format and rules specified above."""
@@ -310,15 +298,10 @@ Generate the complete layout layer JSON structure following the format and rules
         content = response.choices[0].message.content
         
         # Check if content is None or empty
-        if content is None:
+        if content is None or not content.strip():
             logger.error("Response content is None")
             logger.error(f"Full response: {response}")
             raise ValueError("Response content is None")
-        
-        if not content.strip():
-            logger.error("Response content is empty")
-            logger.error(f"Response structure: {response}")
-            raise ValueError("Response content is empty")
         
         # Extract JSON from content (handles embedded JSON, markdown blocks, etc.)
         content = extract_json_from_content(content)
@@ -357,15 +340,7 @@ async def generate_layer3_render(logic_layer: Dict[str, Any], layout_layer: Dict
     """
     system_prompt = """You are an expert at creating detailed image generation prompts for academic infographics.
 
-Your task is to generate a comprehensive text prompt that describes exactly what to draw for a methodology workflow diagram. This prompt will be fed to an image generation model (like GPT-4 Vision or DALL-E).
-
-The prompt should:
-1. Describe the visual style (academic infographic, clean, professional, colorful)
-2. Specify the layout structure (regions, positions)
-3. List all content boxes with their labels and bullet points
-4. Describe arrow connections and loop structures
-5. Include legends and callouts
-6. Provide important rules to ensure accuracy
+Your task is to generate a comprehensive text prompt that describes exactly what to draw for a methodology workflow diagram. This prompt will be fed to an image generation model (like GPT-image-1.5).
 
 Format the prompt as a clear, structured text that an image model can follow precisely. Do NOT include markdown code blocks or JSON - just the prompt text itself.
 
@@ -380,13 +355,14 @@ LAYOUT LAYER:
 {json.dumps(layout_layer, indent=2)}
 
 Generate a comprehensive render prompt that:
-1. Describes the title and style
-2. Specifies the layout structure
-3. Lists all steps with their exact labels and bullet points
-4. Describes all arrows and connections
-5. Includes legends and visual elements
-6. Provides rules to ensure accuracy
-
+1. Describe the visual style (academic infographic, clean, professional, colorful)
+2. Describes the title
+3. Specify the layout structure (regions, positions)
+4. Lists all steps in content boxes with their exact labels and bullet points
+5. Describe arrow connections and loop structures
+6. Include legends under the main layout structure
+7. Append each callout context to the node it is attached to and visual elements
+8. Provide important bullet points rules to ensure accuracy on every component.
 Return ONLY the prompt text, no markdown formatting, no code blocks."""
 
     ai_client = get_ai_client()
@@ -417,15 +393,10 @@ Return ONLY the prompt text, no markdown formatting, no code blocks."""
         content = response.choices[0].message.content
         
         # Check if content is None or empty
-        if content is None:
+        if content is None or not content.strip():
             logger.error("Response content is None")
             logger.error(f"Full response: {response}")
             raise ValueError("Response content is None")
-        
-        if not content.strip():
-            logger.error("Response content is empty")
-            logger.error(f"Response structure: {response}")
-            raise ValueError("Response content is empty")
         
         render_prompt = content.strip()
         logger.info("Layer 3 (Render) generated successfully")
@@ -459,7 +430,7 @@ async def generate_three_layers(methodology_text: str, output_dir: Optional[str]
     logger.info("Starting 3-layer generation...")
     
     # Generate Layer 1 (Logic)
-    logger.info("Generating Layer 1 (Logic)...")
+    logger.info(f"Generating Layer 1 (Logic)...")
     layer1 = await generate_layer1_logic(methodology_text)
     
     # Generate Layer 2 (Layout) - depends on Layer 1
@@ -502,7 +473,7 @@ async def generate_three_layers(methodology_text: str, output_dir: Optional[str]
     return result
 
 
-async def generate_from_file(input_file: str, output_dir: Optional[str] = None) -> Dict[str, Any]:
+async def generate_from_file(input_file_path: str, output_dir: Optional[str] = None) -> Dict[str, Any]:
     """
     Generate three layers from a methodology description file.
     
@@ -514,11 +485,37 @@ async def generate_from_file(input_file: str, output_dir: Optional[str] = None) 
         Dictionary containing all three layers
     """
     # Load methodology description
-    methodology_text = load_methodology_description(input_file)
+    methodology_text = load_methodology_description(input_file_path)
     
-    # Determine output directory
-    if output_dir is None:
-        output_dir = os.path.dirname(input_file)
-    
+    # create output directory if it doesn't exist
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     # Generate layers
     return await generate_three_layers(methodology_text, output_dir)
+
+from .images.test_image import generate_image
+
+if __name__ == "__main__":
+    base_dir = os.path.dirname(__file__)
+    input_file_path = os.path.join(base_dir, "images/1768522311_8stps/interpretation.txt")
+    output_dir = os.path.join(base_dir, "images/1768522311_8stps")
+    # sub_dir = os.path.join(output_dir, "01")
+    # sub_sub_dir = os.path.join(sub_dir, "002", "0001")
+    result = asyncio.run(generate_from_file(input_file_path, output_dir))
+    render_text = result["layer3_render"]
+    # layer1 = json.load(open(os.path.join(sub_dir, "layer1_logic.json"), "r"))
+    # layer2 = asyncio.run(generate_layer2_layout(layer1))
+    # layer2_path = os.path.join(sub_sub_dir, "layer2_layout.json")
+    # with open(layer2_path, "w") as f:
+    #     json.dump(layer2, f, indent=2, ensure_ascii=False)
+    # layer2 = json.load(open(os.path.join(sub_dir, "layer2_layout.json"), "r"))
+
+    # render_text = asyncio.run(generate_layer3_render(layer1, layer2))
+    # render_path = os.path.join(sub_dir, "layer3_render.txt")
+    # with open(render_path, "w") as f:
+    #     f.write(render_text)
+    # with open(render_path, "r") as f:
+    #     render_text = f.read()
+    image = generate_image(render_text, os.path.join(output_dir, "methodology_02.png"))
+    logger.info(f"Image saved")

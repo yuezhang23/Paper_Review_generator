@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Upload, FileText, Link, File, Loader2, CheckCircle2, AlertCircle, X, Send, MessageSquare, Globe, Paperclip } from 'lucide-react'
+import { Upload, FileText, Link, File, Loader2, CheckCircle2, AlertCircle, X, Send, MessageSquare, Globe, Paperclip, Image } from 'lucide-react'
 import axios from 'axios'
 
 interface UploadedFile {
@@ -38,7 +38,7 @@ interface Model {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-type TabType = 'summary' | 'plagiarism' | 'chat'
+type TabType = 'summary' | 'plagiarism' | 'chat' | 'image'
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('summary')
@@ -68,6 +68,18 @@ export default function Home() {
     uploadedFile: null
   })
   
+  const [imageForm, setImageForm] = useState<{
+    inputType: 'file' | 'url' | 'name'
+    paperUrl: string
+    paperName: string
+    uploadedFile: UploadedFile | null
+  }>({
+    inputType: 'file',
+    paperUrl: '',
+    paperName: '',
+    uploadedFile: null
+  })
+  
   // Tab-specific results - preserved when switching tabs
   const [summaryResult, setSummaryResult] = useState<AnalysisResult | null>(null)
   const [plagiarismResult, setPlagiarismResult] = useState<AnalysisResult | null>(null)
@@ -75,13 +87,22 @@ export default function Home() {
   
   // Current tab state (for form inputs)
   const currentForm = activeTab === 'summary' ? summaryForm : 
-                      activeTab === 'plagiarism' ? plagiarismForm : null
+                      activeTab === 'plagiarism' ? plagiarismForm :
+                      activeTab === 'image' ? imageForm : null
   const currentResult = activeTab === 'summary' ? summaryResult :
                         activeTab === 'plagiarism' ? plagiarismResult : null
   
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // Image generation state (for summary tab button - kept for backward compatibility)
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
+  const [generatedImage, setGeneratedImage] = useState<{ image_url: string; revised_prompt?: string; methodology_steps?: any } | null>(null)
+  
+  // Image generation state for image tab
+  const [imageResult, setImageResult] = useState<{ image_url: string; revised_prompt?: string; methodology_steps?: any } | null>(null)
+  const [isGeneratingImageTab, setIsGeneratingImageTab] = useState(false)
   
   // Chat state
   const [chatInput, setChatInput] = useState('')
@@ -132,6 +153,8 @@ export default function Home() {
       setSummaryForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
     } else if (activeTab === 'plagiarism') {
       setPlagiarismForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
+    } else if (activeTab === 'image') {
+      setImageForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
     }
     setError(null)
     
@@ -153,6 +176,8 @@ export default function Home() {
       setSummaryForm(prev => ({ ...prev, uploadedFile: null }))
     } else if (activeTab === 'plagiarism') {
       setPlagiarismForm(prev => ({ ...prev, uploadedFile: null }))
+    } else if (activeTab === 'image') {
+      setImageForm(prev => ({ ...prev, uploadedFile: null }))
     }
     setError(null)
   }
@@ -191,6 +216,8 @@ export default function Home() {
         await handleSummary()
       } else if (activeTab === 'plagiarism') {
         await handlePlagiarism()
+      } else if (activeTab === 'image') {
+        await handleGenerateImageTab()
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || 'An error occurred')
@@ -249,6 +276,87 @@ export default function Home() {
       console.error('Summary error:', err)
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  const handleGenerateImage = async () => {
+    if (!currentResult || activeTab !== 'summary') return
+    
+    setIsGeneratingImage(true)
+    setError(null)
+    setGeneratedImage(null)
+    
+    try {
+      const response = await axios.post(`${API_BASE_URL}/api/generate-summary-image`, {
+        pdf_path: currentResult.metadata?.pdf_path || undefined,
+        file_id: currentResult.metadata?.file_id || undefined,
+      }, {
+        timeout: 300000 // 5 minutes for image generation
+      })
+      
+      setGeneratedImage({
+        image_url: response.data.image_url,
+        revised_prompt: response.data.revised_prompt,
+        methodology_steps: response.data.methodology_steps
+      })
+    } catch (err: any) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Image generation timed out. Please try again.')
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Failed to generate image')
+      }
+      console.error('Image generation error:', err)
+    } finally {
+      setIsGeneratingImage(false)
+    }
+  }
+
+  const handleGenerateImageTab = async () => {
+    if (!currentForm || activeTab !== 'image') return
+    
+    setIsGeneratingImageTab(true)
+    setError(null)
+    setImageResult(null)
+    
+    try {
+      let fileIds: string[] = []
+
+      // Handle file upload
+      if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
+        const formData = new FormData()
+        formData.append('files', currentForm.uploadedFile.file)
+
+        const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 60000 // 60 seconds for file upload
+        })
+        fileIds = uploadResponse.data.file_ids || []
+      }
+
+      // Call image generation API with new decoupled parameters
+      const response = await axios.post(`${API_BASE_URL}/api/generate-summary-image`, {
+        file_ids: fileIds.length > 0 ? fileIds : undefined,
+        paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
+        paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined,
+        use_openreview: true,
+      }, {
+        timeout: 900000 // 15 minutes (900,000 ms) - includes RAG pipeline if needed
+      })
+      
+      setImageResult({
+        image_url: response.data.image_url,
+        revised_prompt: response.data.revised_prompt,
+        methodology_steps: response.data.methodology_steps
+      })
+    } catch (err: any) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Image generation timed out. The paper processing is taking longer than expected. Please try again or use a smaller PDF.')
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Failed to generate image')
+      }
+      console.error('Image generation error:', err)
+    } finally {
+      setIsGeneratingImageTab(false)
     }
   }
 
@@ -401,6 +509,13 @@ export default function Home() {
         paperName: '',
         uploadedFile: null
       })
+    } else if (activeTab === 'image') {
+      setImageForm({
+        inputType: 'file',
+        paperUrl: '',
+        paperName: '',
+        uploadedFile: null
+      })
     }
     setError(null)
     setChatFiles([])
@@ -416,8 +531,11 @@ export default function Home() {
     // Clear results for current tab only
     if (activeTab === 'summary') {
       setSummaryResult(null)
+      setGeneratedImage(null)
     } else if (activeTab === 'plagiarism') {
       setPlagiarismResult(null)
+    } else if (activeTab === 'image') {
+      setImageResult(null)
     } else if (activeTab === 'chat') {
       setChatMessages([])
     }
@@ -501,6 +619,17 @@ export default function Home() {
               }`}
             >
               Plagiarism Checker
+            </button>
+            <button
+              onClick={() => switchTab('image')}
+              className={`px-6 py-2 rounded-lg font-semibold transition-all duration-200 ${
+                activeTab === 'image'
+                  ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
+                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              <Image className="w-4 h-4 inline mr-2" />
+              Generate Image
             </button>
             <button
               onClick={() => switchTab('chat')}
@@ -673,7 +802,7 @@ export default function Home() {
             {/* Upload Window */}
             <div className="mb-8">
               <h2 className="text-xl font-bold text-white mb-4">
-                {activeTab === 'summary' ? 'Paper Summary' : 'Plagiarism Detection'}
+                {activeTab === 'summary' ? 'Paper Summary' : activeTab === 'plagiarism' ? 'Plagiarism Detection' : 'Generate Methodology Diagram'}
               </h2>
               
               {/* Input Type Selector */}
@@ -686,6 +815,8 @@ export default function Home() {
                           setSummaryForm(prev => ({ ...prev, inputType: 'file' }))
                         } else if (activeTab === 'plagiarism') {
                           setPlagiarismForm(prev => ({ ...prev, inputType: 'file' }))
+                        } else if (activeTab === 'image') {
+                          setImageForm(prev => ({ ...prev, inputType: 'file' }))
                         }
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -703,6 +834,8 @@ export default function Home() {
                           setSummaryForm(prev => ({ ...prev, inputType: 'url' }))
                         } else if (activeTab === 'plagiarism') {
                           setPlagiarismForm(prev => ({ ...prev, inputType: 'url' }))
+                        } else if (activeTab === 'image') {
+                          setImageForm(prev => ({ ...prev, inputType: 'url' }))
                         }
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -720,6 +853,8 @@ export default function Home() {
                           setSummaryForm(prev => ({ ...prev, inputType: 'name' }))
                         } else if (activeTab === 'plagiarism') {
                           setPlagiarismForm(prev => ({ ...prev, inputType: 'name' }))
+                        } else if (activeTab === 'image') {
+                          setImageForm(prev => ({ ...prev, inputType: 'name' }))
                         }
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -787,6 +922,8 @@ export default function Home() {
                             setSummaryForm(prev => ({ ...prev, paperUrl: e.target.value }))
                           } else if (activeTab === 'plagiarism') {
                             setPlagiarismForm(prev => ({ ...prev, paperUrl: e.target.value }))
+                          } else if (activeTab === 'image') {
+                            setImageForm(prev => ({ ...prev, paperUrl: e.target.value }))
                           }
                           setError(null)
                         }}
@@ -808,6 +945,8 @@ export default function Home() {
                             setSummaryForm(prev => ({ ...prev, paperName: e.target.value }))
                           } else if (activeTab === 'plagiarism') {
                             setPlagiarismForm(prev => ({ ...prev, paperName: e.target.value }))
+                          } else if (activeTab === 'image') {
+                            setImageForm(prev => ({ ...prev, paperName: e.target.value }))
                           }
                           setError(null)
                         }}
@@ -823,17 +962,17 @@ export default function Home() {
               <div className="mt-6">
                 <button
                   onClick={handleSubmit}
-                  disabled={isProcessing}
+                  disabled={isProcessing || (activeTab === 'image' && isGeneratingImageTab)}
                   className="w-full px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold rounded-lg hover:from-blue-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center gap-2"
                 >
-                  {isProcessing ? (
+                  {(isProcessing || (activeTab === 'image' && isGeneratingImageTab)) ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
                       Processing...
                     </>
                   ) : (
                     <>
-                      {activeTab === 'summary' ? 'Generate Summary' : 'Check for Plagiarism'}
+                      {activeTab === 'summary' ? 'Generate Summary' : activeTab === 'plagiarism' ? 'Check for Plagiarism' : 'Generate Image'}
                     </>
                   )}
                 </button>
@@ -865,12 +1004,33 @@ export default function Home() {
                       </>
                     )}
                   </h3>
-                  <button
-                    onClick={clearResults}
-                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors"
-                  >
-                    New Analysis
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {currentResult.type === 'summary' && (
+                      <button
+                        onClick={handleGenerateImage}
+                        disabled={isGeneratingImage}
+                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-colors flex items-center gap-2"
+                      >
+                        {isGeneratingImage ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Generating...
+                          </>
+                        ) : (
+                          <>
+                            <Image className="w-4 h-4" />
+                            Generate Image
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
+                      onClick={clearResults}
+                      className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors"
+                    >
+                      New Analysis
+                    </button>
+                  </div>
                 </div>
                 
                 <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
@@ -879,6 +1039,29 @@ export default function Home() {
                       <div className="text-gray-200 whitespace-pre-wrap leading-relaxed">
                         {currentResult.content}
                       </div>
+                      {generatedImage && generatedImage.image_url && (
+                        <div className="mt-6 pt-6 border-t border-gray-700">
+                          <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                            <Image className="w-5 h-5 text-purple-400" />
+                            Generated Methodology Diagram
+                          </h4>
+                          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                            <div className="flex justify-center">
+                              <img 
+                                src={generatedImage.image_url} 
+                                alt="Methodology diagram" 
+                                className="max-w-full h-auto rounded-lg"
+                                style={{ maxWidth: '1024px', width: '100%', aspectRatio: '1 / 1', objectFit: 'contain' }}
+                              />
+                            </div>
+                            {generatedImage.revised_prompt && (
+                              <p className="mt-4 text-sm text-gray-400 italic">
+                                {generatedImage.revised_prompt}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-4">
@@ -916,6 +1099,49 @@ export default function Home() {
                   )}
                   <div className="mt-4 text-xs text-gray-500">
                     Generated at {currentResult.timestamp.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Image Result Display for Image Tab */}
+            {activeTab === 'image' && imageResult && (
+              <div className="mt-8 border-t border-gray-700 pt-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Image className="w-5 h-5 text-purple-400" />
+                    Generated Methodology Diagram
+                  </h3>
+                  <button
+                    onClick={clearResults}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors"
+                  >
+                    New Generation
+                  </button>
+                </div>
+                
+                <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex justify-center">
+                      <img 
+                        src={imageResult.image_url} 
+                        alt="Methodology diagram" 
+                        className="max-w-full h-auto rounded-lg"
+                        style={{ maxWidth: '1024px', width: '100%', aspectRatio: '1 / 1', objectFit: 'contain' }}
+                      />
+                    </div>
+                    {imageResult.revised_prompt && (
+                      <p className="mt-4 text-sm text-gray-400 italic">
+                        {imageResult.revised_prompt}
+                      </p>
+                    )}
+                    {imageResult.methodology_steps && (
+                      <div className="mt-4 p-3 bg-gray-900 rounded text-xs text-gray-300 whitespace-pre-wrap">
+                        <strong>Methodology Steps:</strong>
+                        <br />
+                        {imageResult.methodology_steps}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

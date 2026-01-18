@@ -5,8 +5,10 @@ Integrates with AI Builder API (Grok) and OpenReview API
 
 import os
 import httpx
+import asyncio
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -19,12 +21,20 @@ from utils import (
     file_storage,
     PAPER_QUERY_SUGGESTIONS,
     upload_files,
+    get_ai_client,
 )
 
 # Import service routers
 from summary_generator.main import router as summary_router
 from plagiarism_service import router as plagiarism_router
 from chatbot_service import router as chatbot_router
+
+
+import logging
+import numpy as np
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -255,6 +265,27 @@ async def get_file(file_id: str):
         "text_content": file_info["text_content"][:1000] + "..." if len(file_info["text_content"]) > 1000 else file_info["text_content"]
     }
 
+@app.get("/api/reviews/{filename}")
+async def serve_review_file(filename: str):
+    """Serve review HTML files from the reviews directory"""
+    reviews_dir = os.path.join(os.path.dirname(__file__), "reviews")
+    file_path = os.path.join(reviews_dir, filename)
+    
+    # Security: ensure file is in reviews directory (prevent directory traversal)
+    if not os.path.abspath(file_path).startswith(os.path.abspath(reviews_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Review file not found")
+    
+    # Determine content type
+    if filename.endswith('.html'):
+        return FileResponse(file_path, media_type='text/html')
+    elif filename.endswith('.pdf'):
+        return FileResponse(file_path, media_type='application/pdf')
+    else:
+        return FileResponse(file_path)
+
 @app.post("/api/search-review-from-openreview")
 async def search_review_from_openreview(request: PaperSearchRequest):
     """Search for a paper by name and retrieve reviews (DEPRECATED - use /api/get-paper-reviews instead)
@@ -274,7 +305,6 @@ async def get_paper_context(request: PaperIdRequest):
     # Convert PaperIdRequest to PaperReviewRequest and delegate
     review_request = PaperReviewRequest(paper_id=request.paper_id)
     return await get_paper_reviews(review_request)
-
 
 # All extracted code removed - now in service files:
 # - Summary functionality: summary_service.py

@@ -172,6 +172,181 @@ async def resolve_pdf_path(
     )
 
 
+async def build_paper_embeddings(
+    file_ids: Optional[List[str]] = None,
+    paper_url: Optional[str] = None,
+    paper_name: Optional[str] = None,
+    use_openreview: Optional[bool] = True,
+    figure_extraction_method: Optional[str] = "none",
+    table_extraction_method: Optional[str] = "none"
+) -> tuple[str, VectorIndex, Dict[str, Any]]:
+    """
+    Steps 1-5: Embedding-related processing pipeline.
+    
+    Implements the embedding pipeline:
+    1. PDF → GROBID → structured sections
+    2. Tables → Camelot / Tabula (text-first)
+    3. Figures → extracted images
+    4. Multimodal GPT → figure & table understanding (OPTIONAL, max 3 tables/3 figures)
+       - Selection heuristics: mentioned in Abstract/Conclusion, labeled "Main results",
+         contains SOTA comparisons or ablations
+    5. Embeddings → vector index (RAG) - cached if paper processed before
+    
+    Args:
+        file_ids: Optional list of uploaded file IDs
+        paper_url: Optional URL to PDF paper
+        paper_name: Optional paper name for search
+        use_openreview: Whether to use OpenReview for paper fetching
+        figure_extraction_method: Method for figure extraction ("none", "ocr", "multimodal")
+        table_extraction_method: Method for table extraction ("none", "ocr", "multimodal")
+    
+    Returns:
+        Tuple of (pdf_path, index, metadata)
+    """
+    logger.info(f"[Embeddings] Starting embedding pipeline: file_ids={file_ids}, paper_url={paper_url}, paper_name={paper_name}")
+    
+    # Step 1: Resolve PDF path from request
+    logger.info("[Embeddings Step 1] Resolving PDF path...")
+    try:
+        pdf_path = await resolve_pdf_path(
+            file_ids=file_ids,
+            paper_url=paper_url,
+            paper_name=paper_name,
+            use_openreview=use_openreview
+        )
+        logger.info(f"[Embeddings Step 1] PDF path resolved: {pdf_path}")
+    except Exception as e:
+        logger.error(f"[Embeddings Step 1] Failed to resolve PDF path: {str(e)}\n{traceback.format_exc()}")
+        raise
+    
+    # Step 2: Check if PDF exists
+    logger.info(f"[Embeddings Step 2] Checking if PDF exists at: {pdf_path}")
+    try:
+        if not os.path.exists(pdf_path):
+            logger.error(f"[Embeddings Step 2] PDF file not found at path: {pdf_path}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"PDF file not found at path: {pdf_path}"
+            )
+        logger.info(f"[Embeddings Step 2] PDF exists. File size: {os.path.getsize(pdf_path)} bytes")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Embeddings Step 2] Error checking PDF existence: {str(e)}\n{traceback.format_exc()}")
+        raise
+    
+    # Step 3: Build RAG index following the architecture (async optimized)
+    logger.info("[Embeddings Step 3] Building RAG index...")
+    try:
+        figure_extraction = figure_extraction_method or "none"
+        table_extraction = table_extraction_method or "none"
+        logger.info(f"[Embeddings Step 3] Using figure extraction: {figure_extraction}, table extraction: {table_extraction}")
+        index = await build_rag_index(
+            pdf_path,
+            figure_extraction_method=figure_extraction,
+            table_extraction_method=table_extraction
+        )
+        logger.info(f"[Embeddings Step 3] RAG index built successfully. Index contains {len(index.texts)} text chunks")
+    except Exception as e:
+        logger.error(f"[Embeddings Step 3] Failed to build RAG index: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error building RAG index: {str(e)}\nFull traceback: {traceback.format_exc()}"
+        )
+    
+    # Step 4: Extract paper metadata
+    logger.info("[Embeddings Step 4] Extracting paper metadata...")
+    try:
+        metadata = extract_metadata_from_grobid_api(pdf_path)
+        logger.info(f"[Embeddings Step 4] Metadata extracted: title={metadata.get('title', 'Unknown')}")
+    except Exception as e:
+        logger.warning(f"[Embeddings Step 4] Failed to extract metadata: {str(e)}, using defaults")
+        metadata = {
+            "title": "Unknown Title",
+            "authors": [],
+            "year": "N/A",
+            "venue": "N/A"
+        }
+    
+    logger.info("[Embeddings] Embedding pipeline completed successfully")
+    return pdf_path, index, metadata
+
+
+async def query_and_synthesize_summary(
+    index: VectorIndex,
+    metadata: Dict[str, Any],
+    model: str = "supermind-agent-v1",
+    queries: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """
+    Steps 6-7: Query-related processing pipeline.
+    
+    Implements the query and synthesis pipeline:
+    6. Query-driven retrieval
+    7. Final synthesis
+    
+    Args:
+        index: VectorIndex built from paper content
+        metadata: Paper metadata dictionary
+        model: Model ID to use for synthesis (default: "supermind-agent-v1")
+        queries: Optional dictionary of queries (defaults to REVIEW_QUERIES if not provided)
+    
+    Returns:
+        Dictionary with keys: answers, markdown_review, html_content
+    """
+    logger.info("[Query] Starting query and synthesis pipeline...")
+    
+    # Step 6: Generate queries based on template and execute multi-query synthesis
+    logger.info("[Query Step 6] Starting multi-query retrieval and synthesis...")
+    try:
+        logger.info(f"[Query Step 6] Using model: {model}")
+        
+        # Generate queries from template
+        if queries is None:
+            queries = REVIEW_QUERIES
+        logger.info(f"[Query Step 6] Generated {len(queries)} queries based on template")
+        
+        # Execute all queries in parallel
+        answers = await synthesize_multiple_queries(index, queries, model=model)
+        logger.info(f"[Query Step 6] Multi-query synthesis completed. Generated {len(answers)} sections")
+    except Exception as e:
+        logger.error(f"[Query Step 6] Failed to synthesize answers: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error synthesizing review: {str(e)}\nFull traceback: {traceback.format_exc()}"
+        )
+    
+    # Step 7: Format review as markdown
+    logger.info("[Query Step 7] Formatting review as markdown...")
+    try:
+        markdown_review = format_review_as_markdown(metadata, answers)
+        logger.info(f"[Query Step 7] Markdown review formatted. Length: {len(markdown_review)} characters")
+    except Exception as e:
+        logger.error(f"[Query Step 7] Failed to format review: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error formatting review: {str(e)}\nFull traceback: {traceback.format_exc()}"
+        )
+    
+    # Step 7b: Render markdown to HTML content
+    logger.info("[Query Step 7b] Rendering markdown to HTML...")
+    html_content = None
+    try:
+        html_content = render_markdown_to_html(markdown_review)
+        logger.info(f"[Query Step 7b] HTML review rendered ({len(html_content)} chars)")
+    except Exception as e:
+        logger.error(f"[Query Step 7b] Failed to render HTML: {str(e)}\n{traceback.format_exc()}")
+        # Don't fail the request if HTML rendering fails, just log it
+        html_content = None
+    
+    logger.info("[Query] Query and synthesis pipeline completed successfully")
+    return {
+        "answers": answers,
+        "markdown_review": markdown_review,
+        "html_content": html_content
+    }
+
+
 @router.post("/summary")
 async def paper_summary(request: SummaryRequest):
     """
@@ -191,119 +366,31 @@ async def paper_summary(request: SummaryRequest):
     try:
         logger.info(f"[Step 1] Starting summary request with: file_ids={request.file_ids}, paper_url={request.paper_url}, paper_name={request.paper_name}")
         
-        # Step 1: Resolve PDF path from request
-        logger.info("[Step 1] Resolving PDF path...")
-        try:
-            pdf_path = await resolve_pdf_path(
-                file_ids=request.file_ids,
-                paper_url=request.paper_url,
-                paper_name=request.paper_name,
-                use_openreview=request.use_openreview
-            )
-            logger.info(f"[Step 1] PDF path resolved: {pdf_path}")
-        except Exception as e:
-            logger.error(f"[Step 1] Failed to resolve PDF path: {str(e)}\n{traceback.format_exc()}")
-            raise
+        # Steps 1-5: Build embeddings and index
+        pdf_path, index, metadata = await build_paper_embeddings(
+            file_ids=request.file_ids,
+            paper_url=request.paper_url,
+            paper_name=request.paper_name,
+            use_openreview=request.use_openreview,
+            figure_extraction_method=request.figure_extraction_method,
+            table_extraction_method=request.table_extraction_method
+        )
         
-        # Step 2: Check if PDF exists
-        logger.info(f"[Step 2] Checking if PDF exists at: {pdf_path}")
-        try:
-            if not os.path.exists(pdf_path):
-                logger.error(f"[Step 2] PDF file not found at path: {pdf_path}")
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"PDF file not found at path: {pdf_path}"
-                )
-            logger.info(f"[Step 2] PDF exists. File size: {os.path.getsize(pdf_path)} bytes")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"[Step 2] Error checking PDF existence: {str(e)}\n{traceback.format_exc()}")
-            raise
-        
-        # Step 3: Build RAG index following the architecture (async optimized)
-        logger.info("[Step 3] Building RAG index...")
-        try:
-            figure_extraction = request.figure_extraction_method or "none"
-            table_extraction = request.table_extraction_method or "none"
-            logger.info(f"[Step 3] Using figure extraction: {figure_extraction}, table extraction: {table_extraction}")
-            index = await build_rag_index(
-                pdf_path,
-                figure_extraction_method=figure_extraction,
-                table_extraction_method=table_extraction
-            )
-            logger.info(f"[Step 3] RAG index built successfully. Index contains {len(index.texts)} text chunks")
-        except Exception as e:
-            logger.error(f"[Step 3] Failed to build RAG index: {str(e)}\n{traceback.format_exc()}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error building RAG index: {str(e)}\nFull traceback: {traceback.format_exc()}"
-            )
-        
-        # Step 4: Extract paper metadata
-        logger.info("[Step 4] Extracting paper metadata...")
-        try:
-            metadata = extract_metadata_from_grobid_api(pdf_path)
-            logger.info(f"[Step 4] Metadata extracted: title={metadata.get('title', 'Unknown')}")
-        except Exception as e:
-            logger.warning(f"[Step 4] Failed to extract metadata: {str(e)}, using defaults")
-            metadata = {
-                "title": "Unknown Title",
-                "authors": [],
-                "year": "N/A",
-                "venue": "N/A"
-            }
-        
-        # Step 5: Generate queries based on template and execute multi-query synthesis
-        logger.info("[Step 5] Starting multi-query retrieval and synthesis...")
-        try:
-            model = request.model or "supermind-agent-v1"
-            logger.info(f"[Step 5] Using model: {model}")
-            
-            # Generate queries from template
-            queries = REVIEW_QUERIES
-            logger.info(f"[Step 5] Generated {len(queries)} queries based on template")
-            
-            # Execute all queries in parallel
-            answers = await synthesize_multiple_queries(index, queries, model=model)
-            logger.info(f"[Step 5] Multi-query synthesis completed. Generated {len(answers)} sections")
-        except Exception as e:
-            logger.error(f"[Step 5] Failed to synthesize answers: {str(e)}\n{traceback.format_exc()}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error synthesizing review: {str(e)}\nFull traceback: {traceback.format_exc()}"
-            )
-        
-        # Step 6: Format review as markdown
-        logger.info("[Step 6] Formatting review as markdown...")
-        try:
-            markdown_review = format_review_as_markdown(metadata, answers)
-            logger.info(f"[Step 6] Markdown review formatted. Length: {len(markdown_review)} characters")
-        except Exception as e:
-            logger.error(f"[Step 6] Failed to format review: {str(e)}\n{traceback.format_exc()}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error formatting review: {str(e)}\nFull traceback: {traceback.format_exc()}"
-            )
-        
-        # Step 7: Render markdown to HTML content
-        logger.info("[Step 7] Rendering markdown to HTML...")
-        html_content = None
-        try:
-            html_content = render_markdown_to_html(markdown_review)
-            logger.info(f"[Step 7] HTML review rendered ({len(html_content)} chars)")
-        except Exception as e:
-            logger.error(f"[Step 7] Failed to render HTML: {str(e)}\n{traceback.format_exc()}")
-            # Don't fail the request if HTML rendering fails, just log it
-            html_content = None
+        # Steps 6-7: Query and synthesize
+        model = request.model or "supermind-agent-v1"
+        query_results = await query_and_synthesize_summary(
+            index=index,
+            metadata=metadata,
+            model=model
+        )
         
         logger.info("[Success] Paper review generation completed successfully")
         return {
-            "summary": markdown_review,
-            "markdown": markdown_review,
-            "html_content": html_content,
+            "summary": query_results["markdown_review"],
+            "markdown": query_results["markdown_review"],
+            "html_content": query_results["html_content"],
             "metadata": metadata,
-            "sections": answers,
+            "sections": query_results["answers"],
             "pdf_path": pdf_path
         }
         
@@ -892,12 +979,16 @@ from image_methodos_generator.image_method_generator import ImageGenerationReque
 
 @router.post("/generate-summary-image")
 async def generate_summary_image_endpoint(request: ImageGenerationRequest):
-    """Generate an image from summary text using AI Builder API 
+    """Generate a methodology diagram image from paper content using AI Builder API 
+    
+    This endpoint is now decoupled from the summary endpoint and can work independently.
+    It accepts the same input parameters as the summary endpoint (file_ids, paper_url, paper_name).
     
     Steps:
-    1. Query RAG index for step-by-step methodology interpretation
-    2. Parse retrieved embeddings as context
-    3. Generate whiteboard diagram image
+    1. Resolve PDF path and build/load RAG index if needed
+    2. Query RAG index for step-by-step methodology interpretation
+    3. Parse retrieved embeddings as context
+    4. Generate whiteboard diagram image
     """
     return await generate_summary_image(request)
 

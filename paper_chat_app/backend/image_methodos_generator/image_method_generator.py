@@ -9,7 +9,8 @@ import base64
 import traceback
 import logging
 import asyncio
-from typing import Optional
+import re
+from typing import Optional, List
 from fastapi import HTTPException
 from pydantic import BaseModel
 
@@ -29,52 +30,87 @@ from summary_generator.methodology_utils import SECTION_ANCHOR_QUERIES, DETAIL_S
 # Import from image_optimizer
 from .image_optimizer import generate_and_save_image
 # Import from three_layer_generator
-from .three_layer_generator import generate_three_layers
+from .three_layer_generator import generate_from_file
 # Import prompt utilities
-from .prompt_utils import load_prompt_template, format_prompt_template
+from .prompt_utils import load_prompt_template, format_prompt_template, get_max_step_number
 
 
 class ImageGenerationRequest(BaseModel):
-    summary_text: str
-    pdf_path: Optional[str] = None  # PDF path to retrieve embeddings
-    file_id: Optional[str] = None  # File ID to retrieve PDF path
+    file_ids: Optional[List[str]] = None  # List of uploaded file IDs
+    paper_url: Optional[str] = None  # URL to PDF paper
+    paper_name: Optional[str] = None  # Paper name for search
+    use_openreview: Optional[bool] = True  # Whether to use OpenReview for paper fetching
+    pdf_path: Optional[str] = None  # PDF path to retrieve embeddings (backward compatibility)
+    file_id: Optional[str] = None  # File ID to retrieve PDF path (backward compatibility)
     model: Optional[str] = "gpt-image-1.5"  # Default to gpt-image-1.5 (AI Builder API default image model)
     size: Optional[str] = "1024x1024"  # Default size
     quality: Optional[str] = "auto"  # low, medium, high, or auto (AI Builder API supported values)
+    figure_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
+    table_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
 
 
 async def generate_summary_image(request: ImageGenerationRequest):
-    """Generate an image from summary text using AI Builder API 
+    """Generate an image from paper content using AI Builder API 
     
     Steps:
-    1. Query RAG index for step-by-step methodology interpretation
-    2. Parse retrieved embeddings as context
-    3. Generate whiteboard diagram image
+    1. Resolve PDF path and build/load RAG index
+    2. Query RAG index for step-by-step methodology interpretation
+    3. Parse retrieved embeddings as context
+    4. Generate whiteboard diagram image
     """
     try:
-        if not request.summary_text or not request.summary_text.strip():
-            raise HTTPException(status_code=400, detail="Summary text is required")
+        # Step 1: Resolve PDF path - try new parameters first, then fall back to legacy parameters
+        pdf_path = None
+        index = None
         
-        # Step 1: Resolve PDF path
-        pdf_path = request.pdf_path
-        if not pdf_path and request.file_id:
-            if request.file_id in file_storage:
-                file_info = file_storage[request.file_id]
-                pdf_path = file_info.get('pdf_path')
-                if not pdf_path or not os.path.exists(pdf_path):
+        # Try new parameters (file_ids, paper_url, paper_name)
+        if request.file_ids or request.paper_url or request.paper_name:
+            from summary_generator.main import build_paper_embeddings, resolve_pdf_path
+            pdf_path, index, _ = await build_paper_embeddings(
+                file_ids=request.file_ids,
+                paper_url=request.paper_url,
+                paper_name=request.paper_name,
+                use_openreview=request.use_openreview,
+                figure_extraction_method=request.figure_extraction_method,
+                table_extraction_method=request.table_extraction_method
+            )
+        # Fall back to legacy parameters (pdf_path, file_id) for backward compatibility
+        elif request.pdf_path or request.file_id:
+            # Resolve PDF path from legacy parameters
+            pdf_path = request.pdf_path
+            if not pdf_path and request.file_id:
+                if request.file_id in file_storage:
+                    file_info = file_storage[request.file_id]
+                    pdf_path = file_info.get('pdf_path')
+                    if not pdf_path or not os.path.exists(pdf_path):
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"PDF file {request.file_id} not found on disk"
+                        )
+                else:
                     raise HTTPException(
                         status_code=404,
-                        detail=f"PDF file {request.file_id} not found on disk"
+                        detail=f"File ID {request.file_id} not found"
                     )
-            else:
+            
+            if not pdf_path:
                 raise HTTPException(
-                    status_code=404,
-                    detail=f"File ID {request.file_id} not found"
+                    status_code=400,
+                    detail="No PDF source provided. Please provide file_ids, paper_url, paper_name, pdf_path, or file_id."
                 )
-        
-        # Step 2: Load cached RAG index
-        pdf_hash = get_pdf_hash(pdf_path)
-        index = load_cached_index(pdf_hash, VectorIndex)
+            
+            # Try to load cached RAG index, or build it if it doesn't exist
+            from summary_generator.embeddings import build_rag_index
+            index = await build_rag_index(
+                pdf_path,
+                figure_extraction_method=request.figure_extraction_method or "none",
+                table_extraction_method=request.table_extraction_method or "none"
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="No PDF source provided. Please provide file_ids, paper_url, paper_name, pdf_path, or file_id."
+            )
         
         # Step 3: Two-step retrieval for methodology interpretation
         # Step 3.1: Run section-anchor queries to find "method zone" candidates
@@ -128,62 +164,51 @@ async def generate_summary_image(request: ImageGenerationRequest):
         retrieved_content = "\n\n".join(retrieved_chunks)
         
         # Load methodology interpretation prompts
-        methodology_system_prompt = load_prompt_template("methodology_interpretation_system_prompt")
-        methodology_user_prompt_template = load_prompt_template("methodology_interpretation_user_prompt")
+        prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")
+        methodology_system_prompt = load_prompt_template(os.path.join(prompts_dir, "methodology_interpretation_system_prompt.md"))
+        methodology_user_prompt_template = load_prompt_template(os.path.join(prompts_dir, "methodology_interpretation_user_prompt.md"))
         methodology_user_prompt = format_prompt_template(
             methodology_user_prompt_template,
             retrieved_content=retrieved_content
         )
+
+        interpretations = []
+        while len(interpretations) < 3:
+            interpretation_response = await asyncio.to_thread(
+                ai_client.chat.completions.create,
+                model="supermind-agent-v1",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": methodology_system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": methodology_user_prompt
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=1500
+            )
+            step_by_step_interpretation = interpretation_response.choices[0].message.content
+            max_step_num = get_max_step_number(step_by_step_interpretation)
+            # Limit the interpretation to avoid prompt being too long 
+            if len(step_by_step_interpretation) > 5000:
+                lines = step_by_step_interpretation.split('\n')
+                step1_index = next((i for i, line in enumerate(lines) if 'Step 1' in line), 0)
+                interpretation_preview = '\n'.join(lines[step1_index:])
+            else:
+                interpretation_preview = step_by_step_interpretation
+            interpretations.append([interpretation_preview, max_step_num])
         
-        # Run AI client call in thread pool for async execution
-        interpretation_response = await asyncio.to_thread(
-            ai_client.chat.completions.create,
-            model="supermind-agent-v1",
-            messages=[
-                {
-                    "role": "system",
-                    "content": methodology_system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": methodology_user_prompt
-                }
-            ],
-            temperature=0.2,
-            max_tokens=1500
-        )
-        
-        step_by_step_interpretation = interpretation_response.choices[0].message.content
-        logger.info(f"Step-by-step interpretation: {step_by_step_interpretation}")
-        
-        # Step 5: Create whiteboard diagram prompt
-        # Limit the interpretation to avoid prompt being too long 
-        if len(step_by_step_interpretation) > 5000:
-            lines = step_by_step_interpretation.split('\n')
-            step1_index = next((i for i, line in enumerate(lines) if 'Step 1' in line), 0)
-            interpretation_preview = '\n'.join(lines[step1_index:])
-        else:
-            interpretation_preview = step_by_step_interpretation
+        # check the content of interpretations, use majority voting to choose the most common number of steps should appear in the interpretations
+        most_common_step_count = max(set([interpretation[1] for interpretation in interpretations]), key=[interpretation[1] for interpretation in interpretations].count)
+        interpretation_preview = [interpretation[0] for interpretation in interpretations if interpretation[1] == most_common_step_count][0]
 
         # Generate unique request directory using timestamp
         timestamp = int(time.time())
-        request_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), f"images/{timestamp}")
+        request_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), f"image_methodos_generator/images/{timestamp}")
         os.makedirs(request_dir, exist_ok=True)
-        
-        # Load whiteboard diagram prompt template
-        result = await generate_three_layers(interpretation_preview, request_dir)
-        whiteboard_prompt = result["layer3_render"]
-        
-        # Generate and save image using the optimized function
-        image_result = await generate_and_save_image(
-            ai_client=ai_client,
-            whiteboard_prompt=whiteboard_prompt,
-            model=request.model,
-            request_dir=request_dir,
-            max_retries=3,
-            timeout_seconds=240,
-            retry_delay=2
-        )
         
         # Save the interpretation preview locally with matching timestamp
         interpretation_filename = f"interpretation.txt"
@@ -195,11 +220,24 @@ async def generate_summary_image(request: ImageGenerationRequest):
         except Exception as save_error:
             logger.warning(f"Failed to save interpretation preview: {str(save_error)}")
         
+        # Load whiteboard diagram prompt template
+        result = await generate_from_file(interpretation_path, request_dir)
+        whiteboard_prompt = result["layer3_render"]
+        
+        # Generate and save image using the optimized function
+        image_result = await generate_and_save_image(
+            ai_client=ai_client,
+            whiteboard_prompt=whiteboard_prompt,
+            model=request.model,
+            request_dir=request_dir,
+            timeout_seconds=240,
+        )
         return {
             "image_url": image_result["image_url"],
             "revised_prompt": whiteboard_prompt,  # Note: generate_and_save_image doesn't return revised_prompt
-            "methodology_steps": step_by_step_interpretation
+            "methodology_steps": interpretation_preview
         }
+
     except HTTPException:
         raise
     except Exception as e:
