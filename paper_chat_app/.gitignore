@@ -50,6 +50,8 @@ FlagEmbedding/
 
 # Figures and images (if large)
 backend/figures/
+backend/images/
+backend/image_methodos_generator/images/
 
 # Large data files
 *.json

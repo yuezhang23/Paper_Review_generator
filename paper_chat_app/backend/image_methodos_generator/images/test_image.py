@@ -4,13 +4,14 @@ import sys
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-
+import json
+import asyncio
 # Add backend directory to path for imports
 backend_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from image_methodos_generator.prompt_utils import fix_imamge_size, load_prompt_template
-
+from image_methodos_generator.three_layer_generator import generate_layer2_layout, generate_layer3_render
 # Suppress warnings from utils.py about missing prompt templates during import
 with redirect_stdout(StringIO()):
     from utils import get_ai_client
@@ -43,9 +44,13 @@ if __name__ == "__main__":
     base_dir = os.path.dirname(__file__)          
     parent_dir = os.path.dirname(base_dir)      
 
-    request_dir = os.path.join(parent_dir, "images", "1768715446")
+    request_dir = os.path.join(parent_dir, "images", "1768779064")
+    # logic_layer = json.load(open(os.path.join(request_dir, "layer1_logic.json"), "r"))
+    # layout_layer = asyncio.run(generate_layer2_layout(logic_layer))
+    # layout_layer = json.load(open(os.path.join(request_dir, "layer2_layout.json"), "r"))
+    # render_layer = asyncio.run(generate_layer3_render(logic_layer, layout_layer))
     render_text = load_prompt_template(os.path.join(request_dir, "layer3_render.txt"))
-    image = generate_image(render_text, os.path.join(request_dir, "methodology_02.png"))
+    image = generate_image(render_text, os.path.join(request_dir, "methodology_01.png"))
     print("Image generated")
     # criticism = asyncio.run(criticize_image_with_prompt(ai_client, request_dir))
 

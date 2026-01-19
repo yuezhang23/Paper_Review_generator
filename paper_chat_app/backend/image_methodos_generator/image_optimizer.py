@@ -56,6 +56,7 @@ async def generate_and_save_image(
     """
     response = None
     last_error = None
+
     
     try:
         # Use asyncio.wait_for to add timeout protection
