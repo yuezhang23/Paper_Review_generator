@@ -13,7 +13,7 @@ interface UploadedFile {
 }
 
 interface AnalysisResult {
-  type: 'summary' | 'plagiarism'
+  type: 'summary'
   content: string
   timestamp: Date
   metadata?: any
@@ -38,25 +38,13 @@ interface Model {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-type TabType = 'summary' | 'plagiarism' | 'chat' | 'image'
+type TabType = 'summary' | 'chat' | 'image'
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('summary')
   
   // Tab-specific form state - preserved when switching tabs
   const [summaryForm, setSummaryForm] = useState<{
-    inputType: 'file' | 'url' | 'name'
-    paperUrl: string
-    paperName: string
-    uploadedFile: UploadedFile | null
-  }>({
-    inputType: 'file',
-    paperUrl: '',
-    paperName: '',
-    uploadedFile: null
-  })
-  
-  const [plagiarismForm, setPlagiarismForm] = useState<{
     inputType: 'file' | 'url' | 'name'
     paperUrl: string
     paperName: string
@@ -82,15 +70,12 @@ export default function Home() {
   
   // Tab-specific results - preserved when switching tabs
   const [summaryResult, setSummaryResult] = useState<AnalysisResult | null>(null)
-  const [plagiarismResult, setPlagiarismResult] = useState<AnalysisResult | null>(null)
   const [chatMessages, setChatMessages] = useState<Message[]>([])
   
   // Current tab state (for form inputs)
   const currentForm = activeTab === 'summary' ? summaryForm : 
-                      activeTab === 'plagiarism' ? plagiarismForm :
                       activeTab === 'image' ? imageForm : null
-  const currentResult = activeTab === 'summary' ? summaryResult :
-                        activeTab === 'plagiarism' ? plagiarismResult : null
+  const currentResult = activeTab === 'summary' ? summaryResult : null
   
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false)
@@ -151,8 +136,6 @@ export default function Home() {
       setChatFiles(prev => [...prev, ...newFiles])
     } else if (activeTab === 'summary') {
       setSummaryForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
-    } else if (activeTab === 'plagiarism') {
-      setPlagiarismForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
     } else if (activeTab === 'image') {
       setImageForm(prev => ({ ...prev, uploadedFile: newFiles[0] }))
     }
@@ -174,8 +157,6 @@ export default function Home() {
       }
     } else if (activeTab === 'summary') {
       setSummaryForm(prev => ({ ...prev, uploadedFile: null }))
-    } else if (activeTab === 'plagiarism') {
-      setPlagiarismForm(prev => ({ ...prev, uploadedFile: null }))
     } else if (activeTab === 'image') {
       setImageForm(prev => ({ ...prev, uploadedFile: null }))
     }
@@ -214,8 +195,6 @@ export default function Home() {
     try {
       if (activeTab === 'summary') {
         await handleSummary()
-      } else if (activeTab === 'plagiarism') {
-        await handlePlagiarism()
       } else if (activeTab === 'image') {
         await handleGenerateImageTab()
       }
@@ -360,55 +339,6 @@ export default function Home() {
     }
   }
 
-  const handlePlagiarism = async () => {
-    if (!currentForm || activeTab !== 'plagiarism') return
-    
-    setIsProcessing(true)
-    setError(null)
-    
-    try {
-      let fileIds: string[] = []
-
-      // Handle file upload
-      if (currentForm.inputType === 'file' && currentForm.uploadedFile) {
-        const formData = new FormData()
-        formData.append('files', currentForm.uploadedFile.file)
-
-        const uploadResponse = await axios.post(`${API_BASE_URL}/api/upload-files`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 60000 // 60 seconds for file upload
-        })
-        fileIds = uploadResponse.data.file_ids || []
-      }
-
-      // Call plagiarism checker API
-      // Increased timeout to 10 minutes (600000ms) for plagiarism analysis
-      const response = await axios.post(`${API_BASE_URL}/api/plagiarism-check`, {
-        file_ids: fileIds.length > 0 ? fileIds : undefined,
-        paper_url: currentForm.inputType === 'url' ? currentForm.paperUrl : undefined,
-        paper_name: currentForm.inputType === 'name' ? currentForm.paperName : undefined
-      }, {
-        timeout: 600000 // 10 minutes (600,000 ms) - enough for plagiarism analysis
-      })
-
-      setPlagiarismResult({
-        type: 'plagiarism',
-        content: response.data.analysis,
-        timestamp: new Date(),
-        metadata: response.data
-      })
-    } catch (err: any) {
-      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
-        setError('Request timed out. The plagiarism analysis is taking longer than expected. Please try again or use a smaller PDF.')
-      } else {
-        setError(err.response?.data?.detail || err.message || 'Failed to check plagiarism')
-      }
-      console.error('Plagiarism error:', err)
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
   const sendChatMessage = async () => {
     if ((!chatInput.trim() && chatFiles.length === 0) || isLoading) return
 
@@ -502,13 +432,6 @@ export default function Home() {
         paperName: '',
         uploadedFile: null
       })
-    } else if (activeTab === 'plagiarism') {
-      setPlagiarismForm({
-        inputType: 'file',
-        paperUrl: '',
-        paperName: '',
-        uploadedFile: null
-      })
     } else if (activeTab === 'image') {
       setImageForm({
         inputType: 'file',
@@ -532,8 +455,6 @@ export default function Home() {
     if (activeTab === 'summary') {
       setSummaryResult(null)
       setGeneratedImage(null)
-    } else if (activeTab === 'plagiarism') {
-      setPlagiarismResult(null)
     } else if (activeTab === 'image') {
       setImageResult(null)
     } else if (activeTab === 'chat') {
@@ -609,16 +530,6 @@ export default function Home() {
               }`}
             >
               Summary
-            </button>
-            <button
-              onClick={() => switchTab('plagiarism')}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all duration-200 ${
-                activeTab === 'plagiarism'
-                  ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
-                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-              }`}
-            >
-              Plagiarism Checker
             </button>
             <button
               onClick={() => switchTab('image')}
@@ -797,12 +708,12 @@ export default function Home() {
             </div>
           </div>
         ) : (
-          /* Summary & Plagiarism Interface */
+          /* Summary & Image Interface */
           <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl border border-gray-700 p-8 shadow-2xl">
             {/* Upload Window */}
             <div className="mb-8">
               <h2 className="text-xl font-bold text-white mb-4">
-                {activeTab === 'summary' ? 'Paper Summary' : activeTab === 'plagiarism' ? 'Plagiarism Detection' : 'Generate Methodology Diagram'}
+                {activeTab === 'summary' ? 'Paper Summary' : 'Generate Methodology Diagram'}
               </h2>
               
               {/* Input Type Selector */}
@@ -813,8 +724,6 @@ export default function Home() {
                       onClick={() => {
                         if (activeTab === 'summary') {
                           setSummaryForm(prev => ({ ...prev, inputType: 'file' }))
-                        } else if (activeTab === 'plagiarism') {
-                          setPlagiarismForm(prev => ({ ...prev, inputType: 'file' }))
                         } else if (activeTab === 'image') {
                           setImageForm(prev => ({ ...prev, inputType: 'file' }))
                         }
@@ -832,8 +741,6 @@ export default function Home() {
                       onClick={() => {
                         if (activeTab === 'summary') {
                           setSummaryForm(prev => ({ ...prev, inputType: 'url' }))
-                        } else if (activeTab === 'plagiarism') {
-                          setPlagiarismForm(prev => ({ ...prev, inputType: 'url' }))
                         } else if (activeTab === 'image') {
                           setImageForm(prev => ({ ...prev, inputType: 'url' }))
                         }
@@ -851,8 +758,6 @@ export default function Home() {
                       onClick={() => {
                         if (activeTab === 'summary') {
                           setSummaryForm(prev => ({ ...prev, inputType: 'name' }))
-                        } else if (activeTab === 'plagiarism') {
-                          setPlagiarismForm(prev => ({ ...prev, inputType: 'name' }))
                         } else if (activeTab === 'image') {
                           setImageForm(prev => ({ ...prev, inputType: 'name' }))
                         }
@@ -920,8 +825,6 @@ export default function Home() {
                         onChange={(e) => {
                           if (activeTab === 'summary') {
                             setSummaryForm(prev => ({ ...prev, paperUrl: e.target.value }))
-                          } else if (activeTab === 'plagiarism') {
-                            setPlagiarismForm(prev => ({ ...prev, paperUrl: e.target.value }))
                           } else if (activeTab === 'image') {
                             setImageForm(prev => ({ ...prev, paperUrl: e.target.value }))
                           }
@@ -943,8 +846,6 @@ export default function Home() {
                         onChange={(e) => {
                           if (activeTab === 'summary') {
                             setSummaryForm(prev => ({ ...prev, paperName: e.target.value }))
-                          } else if (activeTab === 'plagiarism') {
-                            setPlagiarismForm(prev => ({ ...prev, paperName: e.target.value }))
                           } else if (activeTab === 'image') {
                             setImageForm(prev => ({ ...prev, paperName: e.target.value }))
                           }
@@ -972,7 +873,7 @@ export default function Home() {
                     </>
                   ) : (
                     <>
-                      {activeTab === 'summary' ? 'Generate Summary' : activeTab === 'plagiarism' ? 'Check for Plagiarism' : 'Generate Image'}
+                      {activeTab === 'summary' ? 'Generate Summary' : 'Generate Image'}
                     </>
                   )}
                 </button>
@@ -992,17 +893,8 @@ export default function Home() {
               <div className="mt-8 border-t border-gray-700 pt-8">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                    {currentResult.type === 'summary' ? (
-                      <>
-                        <FileText className="w-5 h-5 text-blue-400" />
-                        Analysis Result
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="w-5 h-5 text-purple-400" />
-                        Plagiarism Analysis
-                      </>
-                    )}
+                    <FileText className="w-5 h-5 text-blue-400" />
+                    Analysis Result
                   </h3>
                   <div className="flex items-center gap-2">
                     {currentResult.type === 'summary' && (
@@ -1034,69 +926,34 @@ export default function Home() {
                 </div>
                 
                 <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
-                  {currentResult.type === 'summary' ? (
-                    <div className="prose prose-invert max-w-none">
-                      <div className="text-gray-200 whitespace-pre-wrap leading-relaxed">
-                        {currentResult.content}
-                      </div>
-                      {generatedImage && generatedImage.image_url && (
-                        <div className="mt-6 pt-6 border-t border-gray-700">
-                          <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                            <Image className="w-5 h-5 text-purple-400" />
-                            Generated Methodology Diagram
-                          </h4>
-                          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                            <div className="flex justify-center">
-                              <img 
-                                src={generatedImage.image_url} 
-                                alt="Methodology diagram" 
-                                className="max-w-full h-auto rounded-lg"
-                                style={{ maxWidth: '1024px', width: '100%', aspectRatio: '1 / 1', objectFit: 'contain' }}
-                              />
-                            </div>
-                            {generatedImage.revised_prompt && (
-                              <p className="mt-4 text-sm text-gray-400 italic">
-                                {generatedImage.revised_prompt}
-                              </p>
-                            )}
+                  <div className="prose prose-invert max-w-none">
+                    <div className="text-gray-200 whitespace-pre-wrap leading-relaxed">
+                      {currentResult.content}
+                    </div>
+                    {generatedImage && generatedImage.image_url && (
+                      <div className="mt-6 pt-6 border-t border-gray-700">
+                        <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                          <Image className="w-5 h-5 text-purple-400" />
+                          Generated Methodology Diagram
+                        </h4>
+                        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                          <div className="flex justify-center">
+                            <img 
+                              src={generatedImage.image_url} 
+                              alt="Methodology diagram" 
+                              className="max-w-full h-auto rounded-lg"
+                              style={{ maxWidth: '1024px', width: '100%', aspectRatio: '1 / 1', objectFit: 'contain' }}
+                            />
                           </div>
+                          {generatedImage.revised_prompt && (
+                            <p className="mt-4 text-sm text-gray-400 italic">
+                              {generatedImage.revised_prompt}
+                            </p>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {currentResult.metadata?.methods && (
-                        <div className="space-y-3">
-                          {Object.entries(currentResult.metadata.methods).map(([method, data]: [string, any]) => (
-                            <div key={method} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                              <div className="flex items-center justify-between mb-2">
-                                <h4 className="font-semibold text-white capitalize">{method.replace('_', ' ')}</h4>
-                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                  data.detected ? 'bg-red-900/30 text-red-400' : 'bg-green-900/30 text-green-400'
-                                }`}>
-                                  {data.detected ? 'Detected' : 'Clear'}
-                                </span>
-                              </div>
-                              <p className="text-gray-300 text-sm">{data.description}</p>
-                              {data.details && (
-                                <div className="mt-2 p-2 bg-gray-900 rounded text-xs text-gray-400">
-                                  {data.details}
-                                </div>
-                              )}
-                              <p className="text-xs text-gray-500 mt-2">
-                                Difficulty to Bypass: {data.difficulty}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {currentResult.content && (
-                        <div className="mt-4 p-4 bg-blue-900/20 border border-blue-700 rounded-lg">
-                          <p className="text-gray-200 whitespace-pre-wrap">{currentResult.content}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    )}
+                  </div>
                   <div className="mt-4 text-xs text-gray-500">
                     Generated at {currentResult.timestamp.toLocaleString()}
                   </div>

@@ -26,7 +26,6 @@ from utils import (
 
 # Import service routers
 from summary_generator.main import router as summary_router
-from plagiarism_service import router as plagiarism_router
 from chatbot_service import router as chatbot_router
 
 
@@ -52,7 +51,6 @@ app.add_middleware(
 
 # Register service routers
 app.include_router(summary_router)
-app.include_router(plagiarism_router)
 app.include_router(chatbot_router)
 
 # Shared Request/Response models (used by general endpoints)
@@ -308,7 +306,6 @@ async def get_paper_context(request: PaperIdRequest):
 
 # All extracted code removed - now in service files:
 # - Summary functionality: summary_service.py
-# - Plagiarism functionality: plagiarism_service.py
 # - Chatbot functionality: chatbot_service.py
 # - All utilities: utils.py
 

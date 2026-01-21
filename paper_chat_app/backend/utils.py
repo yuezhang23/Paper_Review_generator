@@ -236,7 +236,6 @@ def log_paper_summary(paper_metadata: Dict[str, Any], augmented_prompt: str, ana
 # Load prompt templates
 PAPER_ANALYSIS_SYSTEM_PROMPT = load_prompt_template("paper_analysis_system_prompt.md")
 PAPER_SUMMARY_TEMPLATE = load_prompt_template("paper_summary_template.md")
-PLAGIARISM_ANALYSIS_TEMPLATE = load_prompt_template("plagiarism_analysis_template.md")
 
 # Rating scores for paper evaluation
 RATING_SCORES = {

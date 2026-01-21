@@ -19,7 +19,6 @@ from utils import (
     load_prompt_template,
     PAPER_ANALYSIS_SYSTEM_PROMPT,
     PAPER_SUMMARY_TEMPLATE,
-    PLAGIARISM_ANALYSIS_TEMPLATE,
     format_search_results_for_context,
     find_best_matching_paper,
     get_ai_client,
@@ -45,7 +44,7 @@ class ChatRequest(BaseModel):
     paper_context: Optional[Dict[str, Any]] = None
     use_openreview: Optional[bool] = False
     file_ids: Optional[List[str]] = None
-    mode: Optional[str] = "chat"  # "summary", "plagiarism", or "chat" - determines which prompt template to use
+    mode: Optional[str] = "chat"  # "summary" or "chat" - determines which prompt template to use
 
 
 class MultiModelChatRequest(BaseModel):
@@ -79,12 +78,6 @@ def build_messages(request: ChatRequest, openreview_papers: List[Dict[str, Any]]
         messages.append({
             "role": "system",
             "content": PAPER_SUMMARY_TEMPLATE
-        })
-    elif mode == "plagiarism":
-        # Plagiarism tab: Use plagiarism analysis template
-        messages.append({
-            "role": "system",
-            "content": PLAGIARISM_ANALYSIS_TEMPLATE
         })
     else:
         # Chat tab (default): Use general paper analysis prompt
