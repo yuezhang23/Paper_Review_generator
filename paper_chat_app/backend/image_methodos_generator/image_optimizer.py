@@ -59,38 +59,36 @@ async def generate_and_save_image(
     response = None
     last_error = None
 
-    prompt = f"""You are generating an landscape academic infographic image. You MUST follow the provided Render Blueprint exactly.
+    prompt = f"""You are generating an academic infographic image. You MUST follow the provided Render Blueprint exactly.
 
     CANVAS:
-    - Size: 1792×1024
+    - Direction: portrait
     - Background: pure white or extremely light gray
-    - Draw a 50 px white margin on all four sides of the canvas.
+    - Include left-most white margin and right-most white margin
     - No box, arrow, or text may touch or cross the canvas edge.
+
+    TEXT HIERARCHY (MANDATORY):
+    - Step labels (e.g., “Step 2: …”):
+    Bold sans-serif font, approximately 28–32 pt.
+    These must be the largest text elements inside their grouping boxes.
+
+    - Substep titles (e.g., “Substep 2.1: …”):
+    Semi-bold sans-serif font, approximately 22–24 pt.
+    These must be smaller than step labels but larger than bullet points.
+
+    - Bullet point text:
+    Regular sans-serif font, approximately 16–18 pt.
+    Each bullet must appear on its own line and remain fully readable.
+
+    - Legend items:
+    Regular sans-serif font, approximately 16 pt.
+
+    - Arrow labels and inline annotations:
+    Regular or italic sans-serif font, approximately 14–15 pt.
+    These must not visually compete with bullets or titles.
 
     RENDER BLUEPRINT (AUTHORITATIVE):
     {whiteboard_prompt}
-
-    VISUAL HIERARCHY RULES:
-    - Main workflow arrows must be thicker than substep arrows.
-    - Loop arrows must be bold and visually dominant.
-    - Parent → grouping box connector must be emphasized.
-
-    VISUAL GROUPING RULES:
-    - Dashed boxes wrap only substeps (not arrows).
-    - Substeps aligned vertically with identical widths.
-    - All grouped branches must match layout symmetry.
-
-    LEGEND RULE:
-    - Each legend item must include icon + label.
-    - Legend entries cannot be merged.
-
-    NO OMISSIONS RULE:
-    - Do NOT remove or shorten ANY label or bullet.
-    - Every bullet must appear as a separate bullet.
-    - Do NOT MERGE any steps or substeps.
-    - Do NOT OMIT ANY TEXT.
-    - Do NOT rename anything.
-    - All arrow labels must match exactly.
     """
     
     try:
@@ -255,12 +253,14 @@ def extract_ground_truth_from_layer3_render(layer3_render_path: str) -> Dict[str
         "all_text_strings": all_text_strings
     }
 
-async def criticize_image_with_render_text(ai_client, request_dir: str, image_path: str):
+
+async def criticize_image_with_render_text(ai_client, request_dir: str, image_path: str, overflow_check: bool = False, missing_step_check: bool = False):
     # Find layer3_render.txt file (could be layer3_render.txt or layer3_render_1.txt)
     layer3_render_path = None
-    possible_names = ["layer3_render.txt", "layer3_render_1.txt", "layer_3_render.txt"]
+    possible_names = ["layer3_render.txt", "layer3_render_01.txt", "layer_3_render.txt"]
     for name in possible_names:
         path = os.path.join(request_dir, name)
+        print(path)
         if os.path.exists(path):
             layer3_render_path = path
             break
@@ -287,7 +287,7 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
     Return the issues in the following JSON format:
     [
         {{
-            "issue_type": "missing_content | wrong_label | layout_error | arrow_error | legend_error | other",
+            "issue_type": "node | key_component | must_not_change | arrow | legend | other",
             "issue_description": "string",
             "fix_description": "string",
         }}
@@ -295,44 +295,11 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
 
     ONLY RETURN THE JSON OBJECT. 
     """
+    if overflow_check:
+        user_prompt = f"""which side of the image is overflowed?"""
+    if missing_step_check:
+        user_prompt = f"""which steps are missing from the image?"""
 
-    # from PIL import Image
-
-    # img = Image.open(image_path)
-    # W, H = img.size
-
-    # user_prompt = f"""You are analyzing an academic infographic image based on the RENDER_BLUEPRINT.
-
-    # RENDER_BLUEPRINT:
-    # {ground_truth_render_blueprint}
-
-    # TASK:
-    # 1. Identify all violations of the RENDER_BLUEPRINT.
-    # 2. For each violation, localize it with a tight bounding box.
-
-    # COORDINATE SYSTEM:
-    # - Image resolution: {W} × {H} pixels
-    # - Origin (0,0) is top-left
-    # - x increases to the right, y increases downward
-
-    # OUTPUT FORMAT:
-    # [
-    #     {{
-    #         "id": "string",
-    #         "issue_type": "missing_text | wrong_label | layout_error | arrow_error",
-    #         "description": "what is wrong",
-    #         "patch_instruction": "exact instruction for image editor",
-    #         "bbox": [
-    #             "x1": int,
-    #             "y1": int,
-    #             "x2": int,
-    #             "y2": int
-    #         ]
-    #     }},
-    # ]
-    # MUST START WITH A OPENING BRACKET.
-    # MUST END WITH A CLOSING BRACKET.
-    # """
     attemps = 3
     for attempt in range(attemps):
         try:
@@ -375,6 +342,10 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
             if result_content is None or result_content.strip() == "":
                 logger.error(f"No content returned from the model")
                 continue
+
+            if overflow_check or missing_step_check:
+                return result_content
+
             try:
                 if result_content.startswith("```json"):
                     result_content = result_content[7:  -3]
@@ -401,6 +372,90 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
             raise e
 
 
+async def criticize_image_with_queries(ai_client, layer3_render_path: str, image_path: str):
+    queries = [
+        "is there any Node missing from the image?",
+        "is there any Legend item missing from the image?",
+        "Are there over 2 Nodes that have missing key_components from the image?",
+        "is there any Node repeated from the image?",
+        "is there any Legend item repeated from the image?",
+        "is there any key_components repeated for the same Node from the image?",
+        "is there any side of the image is overflowed?",
+    ]
+
+    with open(layer3_render_path, 'r', encoding='utf-8') as f:
+        ground_truth_render_blueprint = f.read()
+
+    # Helper function to process a single query
+    async def process_query(query: str):
+        try:
+            with open(image_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+            image_format = "png"
+
+            user_prompt = f"""Compare the image with the RENDER_TEXT below:
+            
+            RENDER_TEXT:
+            {ground_truth_render_blueprint}
+
+            TASK: Based on the mismatched issues in the image, answer the following question:
+
+            Question:
+            {query}
+
+            Answer ONLY Yes or No:\n
+            """         
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": user_prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/{image_format};base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ]
+            
+            # Run in thread pool for async execution
+            response = await asyncio.to_thread(
+                ai_client.chat.completions.create,
+                model="supermind-agent-v1",
+                messages=messages,
+                temperature=0.2,
+                response_format={"type": "text"}
+            )       
+            result_content = response.choices[0].message.content
+
+            if result_content is None or result_content.strip() == "":
+                logger.error(f"No content returned from the model")
+                return None
+            
+            if result_content.strip().lower() == "yes":
+                return f"{query}: True"
+            else:
+                return f"{query}: False"
+        except Exception as e:
+            logger.error(f"Error criticizing image: {str(e)}, retrying...")
+            return None
+
+    # Run all queries in parallel
+    results = await asyncio.gather(
+        *[process_query(query) for query in queries],
+        return_exceptions=True
+    )
+    
+    # Filter out None values and exceptions
+    answers = [result for result in results if result is not None and not isinstance(result, Exception)]
+    return answers
+
+
 def regenerate_on_issues(issues: List[Dict[str, Any]]):
     for issue in issues:
         if issue["issue_type"] == "missing_step":
@@ -410,66 +465,3 @@ def regenerate_on_issues(issues: List[Dict[str, Any]]):
         if issue["issue_type"] == "legend_error":
             return True
     return False
-
-
-
-
-
-
-async def edit_image_without_masking_issues(ai_client, request_dir: str, image_path: str):
-    with open(os.path.join(request_dir, "issues.json"), "r") as f:
-        issues = json.load(f)
-
-    # extract all fix_description from the issues
-    # Combine system and user prompts into a single prompt for image editing
-    prompt = f"""
-    You are an expert at editing academic infographic images. The provided image has a list of issues and corresponding revisions to be made.
-    Follow each issue-fix_description pair in the json file to edit the image.
-
-    ISSUES_AND_FIX_DESCRIPTIONS:
-    {issues}
-
-    CANVAS RULES:
-    - Aspect ratio: 16:9 landscape 
-    - Background: pure white or extremely light gray
-    - Clean margins and balanced spacing
-
-    Make precise edits to address each issue while preserving all other visual elements.
-    """
-
-    try:
-        response = await asyncio.to_thread(
-            ai_client.images.edit,
-            model="gpt-image-1.5",
-            image=open(image_path, "rb"),
-            prompt=prompt,
-            n=1,
-        )
-        
-        # Extract the edited image from response
-        if not response.data or len(response.data) == 0:
-            raise HTTPException(
-                status_code=500,
-                detail="Image edit failed: No image data in response"
-            )
-        
-        edited_image_b64 = response.data[0].b64_json
-        if not edited_image_b64:
-            raise HTTPException(
-                status_code=500,
-                detail="Image edit failed: No base64 data in response"
-            )
-        
-        # Decode and save the edited image
-        edited_image_bytes = base64.b64decode(edited_image_b64)
-        # edited_image_path = os.path.join(request_dir, "edited_image.png")
-        # with open(edited_image_path, "wb") as f:
-        #     f.write(edited_image_bytes)
-
-        return edited_image_bytes
-    except Exception as e:
-        logger.error(f"Error editing image: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error editing image: {str(e)}"
-        )

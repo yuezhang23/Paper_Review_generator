@@ -82,7 +82,6 @@ Rules:
 8. List critical constraints that must not change
 
 Follow the structure and rules specified above, Generate a full JSON structure.
-The output will be automatically checked for missing steps and edges. Any omission will be considered a failure.
 """
 
     ai_client = get_ai_client() 
@@ -250,9 +249,8 @@ Hard requirements:
 - Missing any text element is considered failure.
 """
 
-    user_prompt = f"""Given the LOGIC LAYER and LAYOUT LAYER below, generate a Render Blueprint for a 1792×1024 academic methodology diagram.
-
-Your output MUST include the following sections A~C in order:
+    user_prompt = f"""Given the LOGIC LAYER and LAYOUT LAYER below, generate a Render Blueprint for an academic methodology diagram.
+Your output MUST include the following sections A~B in order:
 
 LOGIC LAYER
 {json.dumps(logic_layer, indent=2)}
@@ -281,29 +279,21 @@ Number and list EVERY drawable element:
 - Dashed grouping boxes (group id → included nodes → padding rule)
 - Legend items (label → icon description)
 
-B. GEOMETRY & TREE CONSTRAINTS
-Translate layout rules into strict placement instructions:
-- Vertical ordering
-- Equal spacing
-- Indentation hierarchy
-- Substep alignment
-- Arrow directions
-- Group wrapping rules
-
-C. PLACEMENT ORDER
-Step-by-step drawing order from canvas start to legend placement. 
+B. PLACEMENT ORDER
+- Start with Step-by-step drawing order from canvas start to legend placement. 
+- Specify the drawing direction to make the image more balanced and visually appealing.
 
 OUTPUT CONTRACT (STRICT):
 - Do NOT include introductions, commentary, explanations, markdown, or apologies.
 - Do NOT restate the user request.
-- Do NOT add any section outside A, B and C.
+- Do NOT add any section outside A and B.
 - Do NOT merge or omit any section.
 
 RESPONSE MUST START EXACTLY WITH:
 A. GLOBAL INVENTORY
 (No whitespace, no markdown, no text before it.)
 
-Output must include all sections A, B and C. Any omission will be considered a failure.
+Output must include both GLOBAL INVENTORY and PLACEMENT ORDER. Any omission will be considered a failure.
 """
 
     ai_client = get_ai_client()    
@@ -340,7 +330,7 @@ Output must include all sections A, B and C. Any omission will be considered a f
                 raise ValueError("Response content is None")
 
             # check is content is complete
-            if 'A.' not in content or 'B.' not in content or 'C.' not in content:
+            if 'A.' not in content or 'B.' not in content:
                 logger.error("Response content is not complete")
                 if attempt < max_retries:
                     logger.warning(f"Response content is not complete on attempt {attempt + 1}, retrying...")
