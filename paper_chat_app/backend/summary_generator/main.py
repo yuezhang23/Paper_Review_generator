@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from utils import file_storage, UPLOAD_DIR
-from openreview_service import fetch_and_save_openreview_paper, parse_openreview_info_from_text
+from openreview_service import fetch_and_save_openreview_paper, parse_openreview_info_from_text, search_openreview_by_title
 
 # Import from summary_generator modules
 from .embeddings import embed_texts, build_rag_index, VectorIndex
@@ -170,11 +170,41 @@ async def resolve_pdf_path(
     
     # Priority 4: Search by paper name (OpenReview)
     if paper_name and use_openreview:
-        # This would require search functionality - for now, raise error
-        raise HTTPException(
-            status_code=400,
-            detail="Paper name search not yet implemented. Please use paper_url or file_ids."
-        )
+        try:
+            logger.info(f"[Resolve PDF] Searching OpenReview for paper: {paper_name}")
+            papers = await search_openreview_by_title(paper_name, limit=1)
+            if papers and len(papers) > 0:
+                matched_paper = papers[0]
+                paper_id = matched_paper.get('id') or matched_paper.get('paper_id')
+                if paper_id:
+                    logger.info(f"[Resolve PDF] Found paper ID: {paper_id}, fetching PDF...")
+                    paper_data = await fetch_and_save_openreview_paper(paper_id)
+                    if paper_data and paper_data.get('pdf_path'):
+                        logger.info(f"[Resolve PDF] PDF path resolved from OpenReview search: {paper_data['pdf_path']}")
+                        return paper_data['pdf_path']
+                    else:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"PDF not found for paper '{paper_name}' (ID: {paper_id})"
+                        )
+                else:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Could not extract paper ID from search results for '{paper_name}'"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No papers found matching '{paper_name}' on OpenReview"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[Resolve PDF] Error searching OpenReview by name: {str(e)}\n{traceback.format_exc()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error searching for paper '{paper_name}': {str(e)}"
+            )
     
     raise HTTPException(
         status_code=400,

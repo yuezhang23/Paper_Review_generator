@@ -20,7 +20,7 @@ from .figure_table_multimodal import (
     enrich_tables_with_multimodal
 )
 from .cache import (
-    get_pdf_hash,
+    get_content_based_cache_key,
     load_cached_grobid,
     save_cached_grobid,
     load_cached_tables,
@@ -251,11 +251,11 @@ async def build_rag_index(
     """
     logger.info(f"[BuildIndex] Starting RAG index build for PDF: {pdf_path}")
     
-    # Check cache first
-    pdf_hash = get_pdf_hash(pdf_path)
-    logger.info(f"[BuildIndex] PDF hash: {pdf_hash[:16]}...")
+    # Check cache first (content-based key from first paragraph – lightweight)
+    cache_key = get_content_based_cache_key(pdf_path)
+    logger.info(f"[BuildIndex] Cache key: {cache_key[:16]}...")
     
-    cached_index = load_cached_index(pdf_hash, VectorIndex)
+    cached_index = load_cached_index(cache_key, VectorIndex)
     if cached_index is not None:
         logger.info("[BuildIndex] Using cached embeddings and index")
         return cached_index
@@ -268,9 +268,9 @@ async def build_rag_index(
     need_extraction = need_table_extraction or need_figure_extraction
     
     # Load from intermediate cache if available
-    cached_sections = load_cached_grobid(pdf_hash)
-    cached_tables = load_cached_tables(pdf_hash) if need_table_extraction else None
-    cached_figures = load_cached_figures(pdf_hash) if need_figure_extraction else None
+    cached_sections = load_cached_grobid(cache_key)
+    cached_tables = load_cached_tables(cache_key) if need_table_extraction else None
+    cached_figures = load_cached_figures(cache_key) if need_figure_extraction else None
     
     async def parse_grobid():
         if cached_sections:
@@ -280,7 +280,7 @@ async def build_rag_index(
         try:
             sections = await asyncio.to_thread(grobid_parse, pdf_path)
             logger.info(f"[BuildIndex] GROBID parsed {len(sections.get('sections', sections) if isinstance(sections, dict) else sections)} sections")
-            save_cached_grobid(pdf_hash, sections)
+            save_cached_grobid(cache_key, sections)
             return sections
         except Exception as e:
             logger.error(f"[BuildIndex] GROBID parsing error: {str(e)}\n{traceback.format_exc()}")
@@ -296,7 +296,7 @@ async def build_rag_index(
         try:
             tables = await asyncio.to_thread(extract_tables, pdf_path)
             logger.info(f"[BuildIndex] Extracted {len(tables)} tables")
-            save_cached_tables(pdf_hash, tables)
+            save_cached_tables(cache_key, tables)
             return tables
         except Exception as e:
             logger.error(f"[BuildIndex] Table extraction error: {str(e)}\n{traceback.format_exc()}")
@@ -312,7 +312,7 @@ async def build_rag_index(
         try:
             figure_paths = await asyncio.to_thread(extract_figures, pdf_path)
             logger.info(f"[BuildIndex] Extracted {len(figure_paths)} figures")
-            save_cached_figures(pdf_hash, figure_paths)
+            save_cached_figures(cache_key, figure_paths)
             return figure_paths
         except Exception as e:
             logger.error(f"[BuildIndex] Figure extraction error: {str(e)}\n{traceback.format_exc()}")
@@ -467,7 +467,7 @@ async def build_rag_index(
 
     # Save to cache (run in background thread to not block)
     logger.info("[BuildIndex] Saving to cache...")
-    await asyncio.to_thread(save_cached_index, pdf_hash, index, embeddings)
+    await asyncio.to_thread(save_cached_index, cache_key, index, embeddings)
 
     logger.info("[BuildIndex] RAG index build completed successfully")
     return index

@@ -6,9 +6,14 @@ This module provides functions for caching and retrieving:
 - Table extraction results
 - Figure extraction results
 - Embeddings and vector indices
+
+Cache keys use a content-based fingerprint (first paragraph of the paper) when
+possible, so lookup is lightweight: only the first page is read instead of the
+entire PDF.
 """
 
 import os
+import re
 import json
 import hashlib
 import logging
@@ -20,6 +25,83 @@ logger = logging.getLogger(__name__)
 # Cache directory for embeddings
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "embeddings_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Max characters from the beginning of the paper to use for cache key (first paragraph(s))
+_FIRST_PARAGRAPH_MAX_CHARS = 2000
+
+
+def extract_first_paragraph(pdf_path: str, max_chars: int = _FIRST_PARAGRAPH_MAX_CHARS) -> str:
+    """
+    Extract the first paragraph(s) from the PDF using only the first page.
+    Lightweight: reads first page only, no full PDF or GROBID.
+
+    Args:
+        pdf_path: Path to PDF file
+        max_chars: Maximum characters to include (default 2000)
+
+    Returns:
+        Normalized first-paragraph text, or empty string on failure.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        logger.warning("[Cache] PyMuPDF not available for first-paragraph extraction")
+        return ""
+
+    if not os.path.exists(pdf_path):
+        return ""
+
+    try:
+        doc = fitz.open(pdf_path)
+        if len(doc) == 0:
+            doc.close()
+            return ""
+        page = doc[0]
+        raw = page.get_text()
+        doc.close()
+    except Exception as e:
+        logger.warning(f"[Cache] Failed to extract first paragraph: {e}")
+        return ""
+
+    # Split into paragraphs (blank-line separated), take first non-empty
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", raw) if b.strip()]
+    if not blocks:
+        return ""
+
+    out: List[str] = []
+    n = 0
+    for b in blocks:
+        if n + len(b) > max_chars:
+            out.append(b[: max_chars - n])
+            break
+        out.append(b)
+        n += len(b)
+
+    text = " ".join(out)
+    # Normalize: single spaces, strip
+    text = re.sub(r"\s+", " ", text).strip()[:max_chars]
+    return text
+
+
+def get_content_based_cache_key(pdf_path: str) -> str:
+    """
+    Generate a cache key from the first paragraph of the paper.
+    Uses only the first page (lightweight I/O). Falls back to full-PDF hash
+    if extraction fails or yields empty text.
+
+    Args:
+        pdf_path: Path to PDF file
+
+    Returns:
+        Cache key string (MD5 hex)
+    """
+    first = extract_first_paragraph(pdf_path)
+    if first:
+        h = hashlib.md5(first.encode("utf-8")).hexdigest()
+        logger.info(f"[Cache] Content-based key (first paragraph, {len(first)} chars)")
+        return h
+    logger.info("[Cache] Fallback to full-PDF hash")
+    return get_pdf_hash(pdf_path)
 
 
 def get_pdf_hash(pdf_path: str) -> str:

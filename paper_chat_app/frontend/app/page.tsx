@@ -242,7 +242,7 @@ export default function Home() {
 
       setSummaryResult({
         type: 'summary',
-        content: response.data.message || response.data.summary,
+        content: response.data.summary || response.data.message,
         timestamp: new Date(),
         metadata: response.data
       })
