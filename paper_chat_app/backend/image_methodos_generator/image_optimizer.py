@@ -14,6 +14,7 @@ from PIL import Image
 from typing import Dict, Any, List
 # Import from parent utils module
 import sys
+from httpx import request
 import openai
 from google import genai
 from dotenv import load_dotenv
@@ -65,6 +66,7 @@ async def generate_and_save_image(
     - Direction: portrait
     - Background: pure white or extremely light gray
     - Include left-most white margin and right-most white margin
+    - Legend items must be placed on the bottom left corner of the canvas.
     - No box, arrow, or text may touch or cross the canvas edge.
 
     TEXT HIERARCHY (MANDATORY):
@@ -300,12 +302,15 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
     if missing_step_check:
         user_prompt = f"""which steps are missing from the image?"""
 
+    # Read image file once before retry loop to avoid redundant I/O
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    image_format = "png"
+
     attemps = 3
     for attempt in range(attemps):
         try:
-            with open(image_path, "rb") as image_file:
-                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-            image_format = "png"
             
             messages = [
                 {
@@ -371,27 +376,31 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
                 continue
             raise e
 
+QUERIES = [
+    "is there any step missing from the image?",
+    "is there any Legend item missing from the image?",
+    "Are there over 2 Node boxes that have missing key_components or bullet points from the image?",
+    "is there any Node box repeated from the image?",
+    "is there any new Node box added to the image?",
+    "is there any new Legend item added to the image?",
+    "is there any key_components repeated for the same Node box from the image?",
+    "is there any side of the image overflowed?",
+]
 
 async def criticize_image_with_queries(ai_client, layer3_render_path: str, image_path: str):
-    queries = [
-        "is there any Node missing from the image?",
-        "is there any Legend item missing from the image?",
-        "Are there over 2 Nodes that have missing key_components from the image?",
-        "is there any Node repeated from the image?",
-        "is there any Legend item repeated from the image?",
-        "is there any key_components repeated for the same Node from the image?",
-        "is there any side of the image is overflowed?",
-    ]
-
+    queries = QUERIES.copy()
     with open(layer3_render_path, 'r', encoding='utf-8') as f:
         ground_truth_render_blueprint = f.read()
 
+    # Read image file once and encode it for all parallel queries
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    image_format = "png"
+
     # Helper function to process a single query
-    async def process_query(query: str):
+    async def process_query(i: int, query: str):
         try:
-            with open(image_path, "rb") as image_file:
-                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-            image_format = "png"
 
             user_prompt = f"""Compare the image with the RENDER_TEXT below:
             
@@ -437,31 +446,208 @@ async def criticize_image_with_queries(ai_client, layer3_render_path: str, image
                 logger.error(f"No content returned from the model")
                 return None
             
-            if result_content.strip().lower() == "yes":
-                return f"{query}: True"
+            if result_content.strip().lower() == "yes" or result_content.strip().lower() == "true":
+                return True
             else:
-                return f"{query}: False"
+                return False
         except Exception as e:
             logger.error(f"Error criticizing image: {str(e)}, retrying...")
             return None
 
     # Run all queries in parallel
     results = await asyncio.gather(
-        *[process_query(query) for query in queries],
+        *[process_query(i, query) for i, query in enumerate(queries)],
         return_exceptions=True
     )
     
     # Filter out None values and exceptions
-    answers = [result for result in results if result is not None and not isinstance(result, Exception)]
+    answers = [(queries[i], result) for i, result in enumerate(results) if result is not None and not isinstance(results[i], Exception)]
     return answers
 
 
-def regenerate_on_issues(issues: List[Dict[str, Any]]):
-    for issue in issues:
-        if issue["issue_type"] == "missing_step":
-            return True
-        if issue["issue_type"] == "margin_error":
-            return True
-        if issue["issue_type"] == "legend_error":
-            return True
-    return False
+
+async def extract_all_text_from_image(ai_client, image_path: str, max_retries: int = 3):
+    """Extract all text from an image using LLM with error handling and retries."""
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    image_format = "png"
+
+    user_prompt = f"""Extract all text from the image and return the text in the following JSON format:
+    [
+        {{
+            "text": "string",
+        }}
+    ]
+    """     
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": user_prompt
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/{image_format};base64,{base64_image}"
+                    }
+                }
+            ]
+        }
+    ]
+    
+    for attempt in range(max_retries):
+        try:
+            response = await asyncio.to_thread(
+                ai_client.chat.completions.create,
+                model="gemini-3-flash-preview",
+                messages=messages,
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            
+            if not response or not response.choices:
+                logger.error(f"No response or choices from LLM (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)  # Brief delay before retry
+                    continue
+                return None
+            
+            result_content = response.choices[0].message.content
+            if result_content is None or result_content.strip() == "":
+                logger.warning(f"Empty content from LLM (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                return None
+            
+            # Clean up markdown code blocks
+            if result_content.startswith("```json"):
+                result_content = result_content[7:]
+            if result_content.startswith("```"):
+                result_content = result_content[3:]
+            if result_content.endswith("```"):
+                result_content = result_content[:-3]
+            result_content = result_content.strip()
+            
+            try:
+                extracted_text = json.loads(result_content)
+                # print(extracted_text)
+
+                if isinstance(extracted_text, list):
+                    return [text.get("text", "") for text in extracted_text if isinstance(text, dict) and "text" in text]
+                elif isinstance(extracted_text, dict):
+                    # Handle case where JSON is wrapped in an object
+                    if "text" in extracted_text:
+                        return [extracted_text["text"]]
+                    # Try to find a list of texts
+                    for key in extracted_text:
+                        if isinstance(extracted_text[key], list):
+                            return [item.get("text", "") if isinstance(item, dict) else str(item) for item in extracted_text[key]]
+                logger.warning(f"Unexpected JSON format from LLM: {type(extracted_text)}")
+                return None
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                logger.debug(f"Failed to parse content: {result_content[:200]}...")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                return None
+        except Exception as e:
+            logger.error(f"Error extracting text from image (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return None   
+    return None
+
+from collections import Counter
+import string
+
+def compare_all_text_with_ground_truth(all_text: List[str], ground_truth: str):
+    # find all the text existing in both all_text and in ground_truth_render_blueprint, count the length of the text
+    all_txt_len = len(ground_truth)
+    # remove text included in ()
+    ground_truth = ground_truth.lower()
+    ground_truth = re.sub(r'\([^)]*\)', '', ground_truth)
+    # remove all punctuation from ground_truth_render_blueprint
+    ground_truth = re.sub(r'[^\w\s]', '', ground_truth)
+
+    # check duplicate text
+    counter = Counter(all_text)
+    is_duplicate = True if any(count > 1 for count in counter.values()) else False
+
+    unique_text = list(counter.keys())
+    # check len of text exist in all_text but not in all_text_in_ground_truth
+    new_text_length = 0
+    matched_text_length = 0
+    matched_text = []
+    for text in unique_text:
+        if text.startswith("•"):
+            text = text[1:]
+        text = text.strip()
+        # remove text included in ()
+        text = re.sub(r'\([^)]*\)', '', text)
+        # remove all punctuation from text
+        text = re.sub(r'[^\w\s]', '', text)
+        text = text.lower()
+        if text not in ground_truth:
+            # print(f"new text: {text}")
+            new_text_length += len(text) / all_txt_len
+        if text in ground_truth:
+            # print(f"matched text: {text}")
+            matched_text.append(text)
+            matched_text_length += len(text) / all_txt_len
+
+    return matched_text_length, new_text_length, is_duplicate, matched_text
+
+async def rank_images_by_informativeness(
+    ai_client, image_path_list: List[str], ground_truth_render_blueprint: str, request_path: str
+):
+    """Run all LLM extractions in parallel, then score and rank."""
+    extraction_tasks = [
+        extract_all_text_from_image(ai_client, path) for path in image_path_list
+    ]
+    all_results = await asyncio.gather(*extraction_tasks, return_exceptions=False)
+
+    informativeness_scores = []
+    for i, (image_path, all_text) in enumerate(zip(image_path_list, all_results)):
+        # Handle failed extractions (extract_all_text_from_image returns None)
+        texts = all_text if all_text is not None else []
+        matched_score, new_text_score, is_duplicate, matched_text = compare_all_text_with_ground_truth(
+            texts, ground_truth_render_blueprint
+        )
+        informativeness_scores.append({
+            "image_path": image_path,
+            "image_index": i,
+            "matched_score": matched_score,
+            "new_text_score": new_text_score,
+            "is_duplicate": is_duplicate,
+            "matched_text": matched_text
+        })
+    with open(os.path.join(request_path, "informativeness_scores.json"), "w", encoding='utf-8') as f:
+        json.dump(informativeness_scores, f, ensure_ascii=False, indent=4)
+    return sorted(informativeness_scores, key=lambda x: x["matched_score"], reverse=True)
+
+# import sys
+# sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# from utils import get_ai_client
+
+# if __name__ == "__main__":
+#     image_path = os.path.join(os.path.dirname(__file__), "images", "1769233588")
+#     with open(os.path.join(image_path, "layer3_render.txt"), 'r', encoding='utf-8') as f:
+#         ground_truth_render_blueprint = f.read()
+    
+#     ai_client = get_ai_client()
+#     # for i in range(2, 5):
+#     #     image_result = asyncio.run(generate_and_save_image(ai_client, ground_truth_render_blueprint, "gpt-image-1.5", image_path))
+#     #     image_bytes = image_result["image_bytes"]
+#     #     with open(os.path.join(image_path, f"methodology_{i}.png"), "wb") as f:
+#     #         f.write(image_bytes)
+
+#     image_name = ["methodology_4.png"]
+#     image_path_list = [os.path.join(image_path, name) for name in image_name]
+#     results = asyncio.run(rank_images_by_informativeness(ai_client, image_path_list, ground_truth_render_blueprint, image_path))
+#     print(results)

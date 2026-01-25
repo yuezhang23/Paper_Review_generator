@@ -54,7 +54,7 @@ def load_methodology_description(file_path: str) -> str:
 
 async def generate_layer1_logic(methodology_text: str) -> Dict[str, Any]:
     system_prompt = """You are an expert at analyzing methodology descriptions and extracting structured logical representations. 
-Your task is to generate a COMPLETE JSON structure that represents the symbolic graph specification of a methodology workflow. This is the GROUND-TRUTH layer.
+Your task is to generate a COMPLETE JSON structure that represents the symbolic graph specification of a methodology workflow.
 
 OUTPUT REQUIREMENTS:
 - Return ONE valid JSON object only.
@@ -126,18 +126,18 @@ Follow the structure and rules specified above, Generate a full JSON structure.
             try:
                 logic_layer = json.loads(content)
                 
-                # check length of legend and number of nodes
-                if len(logic_layer["legend"]) >= len(logic_layer["nodes"]):
-                    continue
+                # check length of legend, a dictionary and number of nodes, a list
+                # if len(logic_layer["legend"].items()) > len(logic_layer["nodes"]):
+                #     continue
 
                 # check if key component is too short
                 key_components_too_short = False
-                # for node in logic_layer["nodes"]:
-                #     if len(node["key_components"]) > 0 and len(node["key_components"][0]) < 10:
-                #         key_components_too_short = True
-                #         break
-                # if key_components_too_short:
-                #     continue
+                for node in logic_layer["nodes"]:
+                    if len(node["key_components"]) > 0 and len(node["key_components"][0]) < 10:
+                        key_components_too_short = True
+                        break
+                if key_components_too_short:
+                    continue
 
                 return logic_layer
             except json.JSONDecodeError as json_err:

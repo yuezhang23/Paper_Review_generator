@@ -15,6 +15,55 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def extract_all_text_from_image(
+    image_path: str,
+    config: Optional[str] = None,
+    lang: str = 'eng'
+) -> str:
+    """
+    Extract all text from an image using Tesseract OCR.
+    
+    This is a general-purpose function that can extract text from any image type.
+    
+    Args:
+        image_path: Path to the image file
+        config: Optional Tesseract configuration string
+                Default None uses automatic page segmentation
+                Examples:
+                - '--psm 6' for uniform block of text
+                - '--psm 11' for sparse text
+                - '--psm 3' for fully automatic page segmentation
+        lang: Language for OCR (default: 'eng')
+              Can specify multiple languages like 'eng+fra'
+    
+    Returns:
+        Extracted text content from the image
+    """
+    try:
+        if not os.path.exists(image_path):
+            logger.warning(f"[OCR] Image file not found: {image_path}")
+            return ""
+        
+        logger.info(f"[OCR] Extracting all text from image: {image_path}")
+        image = Image.open(image_path)
+        
+        # Apply OCR with optional configuration
+        if config:
+            text = pytesseract.image_to_string(image, lang=lang, config=config)
+        else:
+            text = pytesseract.image_to_string(image, lang=lang)
+        
+        if text.strip():
+            logger.info(f"[OCR] Extracted {len(text.strip())} characters from image")
+            return text.strip()
+        else:
+            logger.warning(f"[OCR] No text found in image: {image_path}")
+            return ""
+    except Exception as e:
+        logger.error(f"[OCR] Failed to extract text from image {image_path}: {str(e)}")
+        return ""
+
+
 def extract_figure_content_ocr(figure_path: str) -> str:
     """
     Extract text content from a figure image using Tesseract OCR.
@@ -154,3 +203,10 @@ def enrich_tables_with_ocr(
         })
     
     return results
+
+
+if __name__ == "__main__":
+    image_path = os.path.join(os.path.dirname(__file__), "m.png")
+    print(os.path.exists(image_path))
+    results = extract_all_text_from_image(image_path)
+    print(results)
