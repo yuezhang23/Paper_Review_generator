@@ -304,10 +304,7 @@ async def get_paper_context(request: PaperIdRequest):
     review_request = PaperReviewRequest(paper_id=request.paper_id)
     return await get_paper_reviews(review_request)
 
-# All extracted code removed - now in service files:
-# - Summary functionality: summary_service.py
-# - Chatbot functionality: chatbot_service.py
-# - All utilities: utils.py
+
 
 
 if __name__ == "__main__":

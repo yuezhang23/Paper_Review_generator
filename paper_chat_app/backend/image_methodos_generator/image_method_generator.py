@@ -449,7 +449,7 @@ async def _generate_image(
     Returns (image_bytes, image_url, criticism).
     """
     max_retries = 5
-    criticisms = []
+    new_image_infos = []
     image_bytes = None
     image_url = None
     image_path = None
@@ -467,7 +467,7 @@ async def _generate_image(
         image_bytes = image_result["image_bytes"]
         image_url = image_result["image_url"]
         with open(image_path, "wb") as f:
-            criticisms.append({"image_index": i, "image_path": image_path, "image_bytes": image_bytes, "image_url": image_url})
+            new_image_infos.append({"image_index": i, "image_path": image_path, "image_bytes": image_bytes, "image_url": image_url})
             f.write(image_bytes)
         logger.info(f"Image saved to: {image_path}")
 
@@ -475,11 +475,11 @@ async def _generate_image(
         ground_truth_render_blueprint = f.read()
     
     # Rank the images by informativeness
-    image_path_list = [c["image_path"] for c in criticisms]
+    image_path_list = [c["image_path"] for c in new_image_infos]
     results = await rank_images_by_informativeness(ai_client, image_path_list, ground_truth_render_blueprint, request_dir)
     # print(results)
-    image_bytes = criticisms[results[0]["image_index"]]["image_bytes"]
-    image_url = criticisms[results[0]["image_index"]]["image_url"]
+    image_bytes = new_image_infos[results[0]["image_index"]]["image_bytes"]
+    image_url = new_image_infos[results[0]["image_index"]]["image_url"]
     return image_bytes, image_url
 
         # # Criticize the image
