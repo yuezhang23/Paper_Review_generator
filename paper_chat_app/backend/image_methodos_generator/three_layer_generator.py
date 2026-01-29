@@ -15,7 +15,7 @@ import json
 import asyncio
 import logging
 import re
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -52,7 +52,9 @@ def load_methodology_description(file_path: str) -> str:
         raise
 
 
-async def generate_layer1_logic(methodology_text: str) -> Dict[str, Any]:
+async def generate_layer1_logic(methodology_text: str, ai_client: Optional[Any] = None) -> Dict[str, Any]:
+    if ai_client is None:
+        ai_client = get_ai_client()
     system_prompt = """You are an expert at analyzing methodology descriptions and extracting structured logical representations. 
 Your task is to generate a COMPLETE JSON structure that represents the symbolic graph specification of a methodology workflow.
 
@@ -84,8 +86,6 @@ Rules:
 Follow the structure and rules specified above, Generate a full JSON structure.
 """
 
-    ai_client = get_ai_client() 
-    
     max_retries = 5
     for attempt in range(max_retries):
         try:
@@ -158,7 +158,9 @@ Follow the structure and rules specified above, Generate a full JSON structure.
                 continue
             raise e
     
-async def generate_layer2_layout(logic_layer: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_layer2_layout(logic_layer: Dict[str, Any], ai_client: Optional[Any] = None) -> Dict[str, Any]:
+    if ai_client is None:
+        ai_client = get_ai_client()
     system_prompt = """You are an expert at designing single-page infographic layouts for methodology workflows.
 
 Your task is to generate a COMPLETE JSON structure that defines the layout blueprint for rendering the logic layer as a visual diagram. This layer makes the graph drawable without inventing structure.
@@ -188,9 +190,7 @@ Rules:
 Generate the ENTIRE JSON structure - do not stop until you've included all regions, arrows, visual encoding.
 """
 
-    ai_client = get_ai_client()
-    
-    max_retries = 5  
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             response = await asyncio.to_thread(
@@ -234,7 +234,11 @@ Generate the ENTIRE JSON structure - do not stop until you've included all regio
             raise e
 
 
-async def generate_layer3_render(logic_layer: Dict[str, Any], layout_layer: Dict[str, Any]) -> str:
+async def generate_layer3_render(
+    logic_layer: Dict[str, Any], layout_layer: Dict[str, Any], ai_client: Optional[Any] = None
+) -> str:
+    if ai_client is None:
+        ai_client = get_ai_client()
     system_prompt = """You are an expert at converting structured workflow logic and layout JSON into a COMPLETE, deterministic Render Blueprint for a diffusion-based image generator.
 
 Your job is NOT to summarize.  
@@ -296,8 +300,6 @@ A. GLOBAL INVENTORY
 Output must include both GLOBAL INVENTORY and PLACEMENT ORDER. Any omission will be considered a failure.
 """
 
-    ai_client = get_ai_client()    
-
     max_retries = 5
     for attempt in range(max_retries):
         try:
@@ -344,13 +346,15 @@ Output must include both GLOBAL INVENTORY and PLACEMENT ORDER. Any omission will
             raise
 
 
-async def generate_three_layers(methodology_text: str, output_dir: Optional[str] = None) -> Dict[str, Any]:
+async def generate_three_layers(
+    methodology_text: str, output_dir: Optional[str] = None, ai_client: Optional[Any] = None
+) -> Dict[str, Any]:
     # Generate Layer 1 (Logic)
     logger.info(f"Generating Layer 1 (Logic)...")
-    layer1 = await generate_layer1_logic(methodology_text)
-    
+    layer1 = await generate_layer1_logic(methodology_text, ai_client=ai_client)
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Save Layer 1 as JSON
     layer1_path = os.path.join(output_dir, "layer1_logic.json")
     with open(layer1_path, 'w', encoding='utf-8') as f:
@@ -359,8 +363,8 @@ async def generate_three_layers(methodology_text: str, output_dir: Optional[str]
 
     # Generate Layer 2 (Layout) - depends on Layer 1
     logger.info("Generating Layer 2 (Layout)...")
-    layer2 = await generate_layer2_layout(layer1)
-    
+    layer2 = await generate_layer2_layout(layer1, ai_client=ai_client)
+
     # Save Layer 2 as JSON
     layer2_path = os.path.join(output_dir, "layer2_layout.json")
     with open(layer2_path, 'w', encoding='utf-8') as f:
@@ -368,7 +372,7 @@ async def generate_three_layers(methodology_text: str, output_dir: Optional[str]
     logger.info(f"Layer 2 saved to: {layer2_path}")
 
     # Generate Layer 3 (Render) - depends on both Layer 1 and Layer 2
-    layer3 = await generate_layer3_render(layer1, layer2)
+    layer3 = await generate_layer3_render(layer1, layer2, ai_client=ai_client)
     # Save Layer 3 as text
     layer3_path = os.path.join(output_dir, "layer3_render.txt")
     with open(layer3_path, 'w', encoding='utf-8') as f:
@@ -383,16 +387,18 @@ async def generate_three_layers(methodology_text: str, output_dir: Optional[str]
     return result
 
 
-async def generate_from_file(input_file_path: str, output_dir: Optional[str] = None) -> Dict[str, Any]:
+async def generate_from_file(
+    input_file_path: str, output_dir: Optional[str] = None, ai_client: Optional[Any] = None
+) -> Dict[str, Any]:
     # Load methodology description
     methodology_text = load_methodology_description(input_file_path)
-    
+
     # create output directory if it doesn't exist
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
     # Generate layers
-    return await generate_three_layers(methodology_text, output_dir)
+    return await generate_three_layers(methodology_text, output_dir, ai_client=ai_client)
 
 # from .images.test_image import generate_image
 # if __name__ == "__main__":

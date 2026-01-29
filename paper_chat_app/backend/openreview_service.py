@@ -191,7 +191,7 @@ async def download_pdf_from_openreview(paper_id: str) -> Optional[bytes]:
     try:
         pdf_url = f"https://openreview.net/pdf?id={paper_id}"
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(pdf_url)
+            response = await client.get(pdf_url, follow_redirects=True)
             if response.status_code == 200:
                 return response.content
     except Exception as e:

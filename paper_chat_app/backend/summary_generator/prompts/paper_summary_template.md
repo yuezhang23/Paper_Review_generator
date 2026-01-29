@@ -1,8 +1,4 @@
-# Paper Summary Template
-
-Please provide a comprehensive analysis of the paper following this structured format:
-
-## paper Intro
+## Paper Intro
 [Include paper metadata:
 - Title: [paper title]
 - Authors: [author names]

@@ -313,6 +313,20 @@ def format_search_results_for_context(search_results: Dict[str, Any]) -> str:
 ai_builder_token: Optional[str] = None
 client: Optional[openai.OpenAI] = None
 
+def get_ai_builder_base_url() -> str:
+    """
+    Base URL for the AI Builders-compatible gateway.
+
+    Default points to the hosted AI Builders orchestrator. To fail over to the
+    local backup gateway, set:
+
+      AI_BUILDER_BASE_URL="http://localhost:8010/backend/v1"
+
+    Note: this value is used for both the OpenAI-compatible chat endpoint and the
+    search endpoint in this codebase.
+    """
+    return (os.getenv("AI_BUILDER_BASE_URL") or "https://space.ai-builders.com/backend/v1").rstrip("/")
+
 def get_ai_client() -> openai.OpenAI:
     """Get or create OpenAI client for AI Builder API"""
     global client, ai_builder_token
@@ -321,7 +335,7 @@ def get_ai_client() -> openai.OpenAI:
         if not ai_builder_token:
             raise ValueError("AI_BUILDER_TOKEN environment variable is required. Please set it in your .env file.")
         client = openai.OpenAI(
-            base_url="https://space.ai-builders.com/backend/v1",
+            base_url=get_ai_builder_base_url(),
             api_key=ai_builder_token
         )
     return client
@@ -444,7 +458,7 @@ async def web_search_paper(
         # Use AI Builder API search endpoint
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             response = await http_client.post(
-                "https://space.ai-builders.com/backend/v1/search/",
+                f"{get_ai_builder_base_url()}/search/",
                 headers={"Authorization": f"Bearer {ai_builder_token}"},
                 json={"keywords": keywords, "max_results": limit},
                 timeout=30.0
@@ -508,6 +522,46 @@ async def web_search_paper(
             "count": 0,
             "source": "web_search"
         }
+
+
+def _pdf_url_from_search_result(r: Dict[str, Any]) -> Optional[str]:
+    """Derive a PDF URL from a web search result. arxiv abs→pdf; arxiv/html→pdf; arxiv/pdf, .pdf, /pdf as-is."""
+    url = (r.get("link") or r.get("url") or "").strip()
+    if not url:
+        return None
+    url_lower = url.lower()
+    # arxiv.org/abs/XXX → arxiv.org/pdf/XXX.pdf
+    m = re.search(r"arxiv\.org/abs/([a-zA-Z0-9\.\-]+)", url_lower)
+    if m:
+        return f"https://arxiv.org/pdf/{m.group(1)}.pdf"
+    # arxiv.org/html/XXX → arxiv.org/pdf/XXX.pdf
+    m = re.search(r"arxiv\.org/html/([a-zA-Z0-9\.\-]+)", url_lower)
+    if m:
+        return f"https://arxiv.org/pdf/{m.group(1)}.pdf"
+    if "arxiv.org/pdf" in url_lower or url_lower.endswith(".pdf"):
+        return url
+    if "/pdf" in url_lower or ".pdf" in url_lower:
+        return url
+    return url
+
+
+async def web_search_for_paper_pdf(paper_name: str) -> Optional[str]:
+    """
+    Use AI Builder web search (/v1/search/) to find a PDF URL for a paper.
+    Prefers arxiv, .pdf links; converts arxiv/abs to /pdf. Returns best URL or None.
+    """
+    data = await web_search_paper(paper_name, limit=15, use_academic_focus=True)
+    if data.get("error") or not data.get("results"):
+        return None
+    results = data["results"]
+    if not results:
+        return None
+    pdf_like = [r for r in results if _pdf_url_from_search_result(r)]
+    candidates = pdf_like if pdf_like else results
+    best = find_best_matching_paper(paper_name, candidates)
+    if not best:
+        return None
+    return _pdf_url_from_search_result(best) or (best.get("link") or best.get("url"))
 
 
 async def find_related_documents_ai_builder(
@@ -587,7 +641,7 @@ async def find_related_documents_ai_builder(
             try:
                 async with httpx.AsyncClient(timeout=30.0) as http_client:
                     response = await http_client.post(
-                        "https://space.ai-builders.com/backend/v1/search/",
+                        f"{get_ai_builder_base_url()}/search/",
                         headers={"Authorization": f"Bearer {ai_builder_token}"},
                         json={"keywords": [query], "max_results": num_related},
                         timeout=30.0

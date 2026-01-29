@@ -276,7 +276,7 @@ def refine_with_local_inpainting(
 # ----------------------------
 import os
 import asyncio
-from image_optimizer import criticize_image_with_render_text
+from .image_optimizer import criticize_image_with_render_text
 
 if __name__ == "__main__":
     # Load your base image

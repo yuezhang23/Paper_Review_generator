@@ -24,7 +24,7 @@ load_dotenv()
 # g_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from image_methodos_generator.prompt_utils import load_prompt_template, format_prompt_template, fix_imamge_size
+from .prompt_utils import load_prompt_template, format_prompt_template, fix_imamge_size
 
 # Set up logging
 logger = logging.getLogger(__name__)

@@ -2,7 +2,6 @@
 Image Method Generator - Handles methodology diagram image generation
 Extracts methodology content from papers and generates visual diagrams
 """
-
 import os
 import time
 import base64
@@ -15,19 +14,12 @@ import hashlib
 from typing import Optional, List, Tuple, Dict, Any
 from fastapi import HTTPException
 from pydantic import BaseModel
-
-# Set up logging
-logger = logging.getLogger(__name__)
-
-# Import from parent utils module
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from summary_generator.main import build_paper_embeddings
+from vector_embedding.embeddings import embed_texts, VectorIndex, build_rag_index
+from vector_embedding.cache import get_content_based_cache_key
 from utils import file_storage, get_ai_client
-
-# Import from summary_generator modules (updated path)
-from summary_generator.embeddings import embed_texts, VectorIndex
-from summary_generator.cache import get_content_based_cache_key
 from .methodology_utils import SECTION_ANCHOR_QUERIES, DETAIL_SEEKING_QUERIES
+import logging
 
 # Import from image_optimizer
 from .image_optimizer import generate_and_save_image, rank_images_by_informativeness
@@ -40,6 +32,8 @@ from .prompt_utils import load_prompt_template, format_prompt_template, get_max_
 # Cache directory for retrieved chunks (reuse embeddings_cache directory)
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "embeddings_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+logger = logging.getLogger(__name__)
 
 
 def get_paper_cache_key(
@@ -148,7 +142,7 @@ class ImageGenerationRequest(BaseModel):
     table_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
 
 
-async def _resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, "VectorIndex", str]:
+async def resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, "VectorIndex", str]:
     """
     Step 1: Resolve PDF path and build/load RAG index from file_ids, paper_url, paper_name,
     or legacy pdf_path/file_id. Returns (pdf_path, index, cache_key).
@@ -157,7 +151,6 @@ async def _resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, 
     index = None
 
     if request.file_ids or request.paper_url or request.paper_name:
-        from summary_generator.main import build_paper_embeddings
         start_time = time.time()
         pdf_path, index, _ = await build_paper_embeddings(
             file_ids=request.file_ids,
@@ -168,7 +161,6 @@ async def _resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, 
             table_extraction_method=request.table_extraction_method,
         )
         elapsed_time = time.time() - start_time
-        logger.info(f"build_paper_embeddings took {elapsed_time:.2f} seconds")
 
     elif request.pdf_path or request.file_id:
         pdf_path = request.pdf_path
@@ -193,7 +185,6 @@ async def _resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, 
                 detail="No PDF source provided. Please provide file_ids, paper_url, paper_name, pdf_path, or file_id.",
             )
 
-        from summary_generator.embeddings import build_rag_index
         start_time = time.time()
         index = await build_rag_index(
             pdf_path,
@@ -219,7 +210,7 @@ async def _resolve_pdf_and_index(request: ImageGenerationRequest) -> Tuple[str, 
     return pdf_path, index, cache_key
 
 
-async def _retrieve_methodology_chunks(
+async def retrieve_methodology_chunks(
     cache_key: str, index: "VectorIndex"
 ) -> Tuple[List[str], List[str]]:
     """
@@ -295,7 +286,7 @@ async def _retrieve_methodology_chunks(
     return method_zone_chunks, detail_chunks
 
 
-def _combine_and_validate_chunks(
+def combine_and_validate_chunks(
     method_zone_chunks: List[str], detail_chunks: List[str]
 ) -> str:
     """
@@ -324,7 +315,7 @@ def _combine_and_validate_chunks(
     return retrieved_content
 
 
-async def _generate_interpretation(ai_client, retrieved_content: str) -> str:
+async def generate_interpretation(ai_client, retrieved_content: str) -> str:
     """
     Step 4: Generate step-by-step methodology interpretation via AI (3 runs),
     majority-vote on step count, and return the chosen interpretation_preview.
@@ -401,7 +392,7 @@ async def _generate_interpretation(ai_client, retrieved_content: str) -> str:
     return chosen
 
 
-def _save_interpretation_and_create_request_dir(interpretation_preview: str) -> Tuple[str, str]:
+def save_interpretation_and_create_request_dir(interpretation_preview: str) -> Tuple[str, str]:
     """
     Step 5: Create request directory (timestamp-based), save interpretation to file,
     and return (request_dir, interpretation_path).
@@ -425,28 +416,31 @@ def _save_interpretation_and_create_request_dir(interpretation_preview: str) -> 
     return request_dir, interpretation_path
 
 
-async def _generate_whiteboard_prompt(
-    interpretation_path: str, request_dir: str
+async def generate_whiteboard_prompt(
+    interpretation_path: str, request_dir: str, ai_client=None
 ) -> str:
     """
     Step 6: Generate whiteboard diagram prompt (layer3_render) from interpretation file.
+    If ai_client is provided (e.g. from gateway config), use it; otherwise use get_ai_client().
     """
     start_time = time.time()
-    result = await generate_from_file(interpretation_path, request_dir)
+    result = await generate_from_file(
+        interpretation_path, request_dir, ai_client=ai_client
+    )
     elapsed_time = time.time() - start_time
     logger.info(f"generate_from_file took {elapsed_time:.2f} seconds")
     return result["layer3_render"]
 
 
-async def _generate_image(
+async def generate_image(
     ai_client,
     whiteboard_prompt: str,
     request_dir: str,
     criticize_image: bool = True,
-) -> Tuple[bytes, str, List[Dict[str, Any]]]:
+) -> Tuple[bytes, str]:
     """
     Step 7: Generate and save image, run criticism loop, and optionally regenerate.
-    Returns (image_bytes, image_url, criticism).
+    Returns (image_bytes, image_url).
     """
     max_retries = 5
     new_image_infos = []
@@ -455,93 +449,73 @@ async def _generate_image(
     image_path = None
 
     for i in range(max_retries):
-        iter_start = time.time()
-        image_result = await generate_and_save_image(
-            ai_client=ai_client,
-            whiteboard_prompt=whiteboard_prompt,
-            model="gpt-image-1.5",
-            request_dir=request_dir,
-            timeout_seconds=240,
-        )
-        image_path = os.path.join(request_dir, f"methodology_{i}.png")
-        image_bytes = image_result["image_bytes"]
-        image_url = image_result["image_url"]
-        with open(image_path, "wb") as f:
-            new_image_infos.append({"image_index": i, "image_path": image_path, "image_bytes": image_bytes, "image_url": image_url})
-            f.write(image_bytes)
-        logger.info(f"Image saved to: {image_path}")
+        try:
+            iter_start = time.time()
+            image_result = await generate_and_save_image(
+                ai_client=ai_client,
+                whiteboard_prompt=whiteboard_prompt,
+                model="gpt-image-1.5",
+                request_dir=request_dir,
+                timeout_seconds=240,
+            )
+            image_path = os.path.join(request_dir, f"methodology_{i}.png")
+            image_bytes = image_result.get("image_bytes")
+            image_url = image_result.get("image_url")
+            
+            if not image_bytes or not image_url:
+                logger.warning(f"Image generation {i+1} returned empty result, skipping")
+                continue
+                
+            with open(image_path, "wb") as f:
+                new_image_infos.append({"image_index": i, "image_path": image_path, "image_bytes": image_bytes, "image_url": image_url})
+                f.write(image_bytes)
+            logger.info(f"Image saved to: {image_path}")
+        except Exception as e:
+            logger.error(f"Failed to generate image {i+1}: {str(e)}")
+            continue
 
-    with open(os.path.join(request_dir, "layer3_render.txt"), 'r', encoding='utf-8') as f:
-        ground_truth_render_blueprint = f.read()
-    
-    # Rank the images by informativeness
-    image_path_list = [c["image_path"] for c in new_image_infos]
-    results = await rank_images_by_informativeness(ai_client, image_path_list, ground_truth_render_blueprint, request_dir)
-    # print(results)
-    image_bytes = new_image_infos[results[0]["image_index"]]["image_bytes"]
-    image_url = new_image_infos[results[0]["image_index"]]["image_url"]
-    return image_bytes, image_url
-
-        # # Criticize the image
-        # render_path = os.path.join(request_dir, "layer3_render.txt")
-        # if criticize_image:
-        #     criticism = await criticize_image_with_queries(ai_client, render_path, image_path)
-        
-        # elapsed_time = time.time() - iter_start
-        # logger.info(f"generate_and_save_image (iter {i + 1}) took {elapsed_time:.2f} seconds")
-
-        # # check if there are more than 2 true in criticism
-        # if len([(c[0], c[1]) for c in criticism if isinstance(c[1], bool) and c[1] == True]) <= 2:
-        #     logger.info(f"Image generated successfully within 2 mismatches")
-        #     return image_bytes, image_url
-        # else:
-        #     logger.info(f"Image generated with more than 2 major mismatches")
-
-async def generate_summary_image(request: ImageGenerationRequest):
-    function_start_time = time.time()
-    try:
-        # Step 1: Resolve PDF path and build/load RAG index
-        pdf_path, index, cache_key = await _resolve_pdf_and_index(request)
-        
-        # Step 2: Retrieve methodology chunks (with parallelized queries)
-        method_zone_chunks, detail_chunks = await _retrieve_methodology_chunks(cache_key, index)
-        
-        # Step 3: Combine and validate chunks
-        retrieved_content = _combine_and_validate_chunks(method_zone_chunks, detail_chunks)
-        
-        # Step 4: Generate step-by-step interpretation using AI (with parallelized calls)
-        ai_client = get_ai_client()
-        interpretation_preview = await _generate_interpretation(ai_client, retrieved_content)
-        
-        # Step 5: Save interpretation and create request directory
-        request_dir, interpretation_path = _save_interpretation_and_create_request_dir(interpretation_preview)
-        
-        # Step 6: Generate whiteboard diagram prompt
-        whiteboard_prompt = await _generate_whiteboard_prompt(interpretation_path, request_dir)
-        
-        # Step 7: Generate and save image
-        image_bytes, image_url = await _generate_image(
-            ai_client, whiteboard_prompt, request_dir, criticize_image=True
-        )
-        
-        total_elapsed_time = time.time() - function_start_time
-        logger.info(f"generate_summary_image total execution time: {total_elapsed_time:.2f} seconds")
-        
-        return {
-            "image_url": image_url,
-            "revised_prompt": whiteboard_prompt, 
-            "methodology_steps": interpretation_preview
-        }
-
-    except HTTPException:
-        total_elapsed_time = time.time() - function_start_time
-        logger.info(f"generate_summary_image total execution time (HTTPException): {total_elapsed_time:.2f} seconds")
-        raise
-    except Exception as e:
-        total_elapsed_time = time.time() - function_start_time
-        logger.error(f"Error generating image: {str(e)}\n{traceback.format_exc()}")
-        logger.info(f"generate_summary_image total execution time (Exception): {total_elapsed_time:.2f} seconds")
+    if not new_image_infos:
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating image: {str(e)}"
+            detail="Failed to generate any images after all retries"
         )
+
+    # Read ground truth render blueprint if available
+    layer3_render_path = os.path.join(request_dir, "layer3_render.txt")
+    ground_truth_render_blueprint = ""
+    if os.path.exists(layer3_render_path):
+        try:
+            with open(layer3_render_path, 'r', encoding='utf-8') as f:
+                ground_truth_render_blueprint = f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read layer3_render.txt: {str(e)}")
+    
+    # Rank the images by informativeness if we have ground truth
+    if ground_truth_render_blueprint:
+        try:
+            image_path_list = [c["image_path"] for c in new_image_infos]
+            results = await rank_images_by_informativeness(ai_client, image_path_list, ground_truth_render_blueprint, request_dir)
+            
+            # Ensure we have results and select the best image
+            if results and len(results) > 0:
+                best_index = results[0].get("image_index", 0)
+                if best_index >= len(new_image_infos):
+                    logger.warning(f"Invalid image_index {best_index}, using first image")
+                    best_index = 0
+                image_bytes = new_image_infos[best_index]["image_bytes"]
+                image_url = new_image_infos[best_index]["image_url"]
+            else:
+                logger.warning("No results from rank_images_by_informativeness, using first image")
+                image_bytes = new_image_infos[0]["image_bytes"]
+                image_url = new_image_infos[0]["image_url"]
+        except Exception as e:
+            logger.warning(f"Failed to rank images: {str(e)}, using first image")
+            image_bytes = new_image_infos[0]["image_bytes"]
+            image_url = new_image_infos[0]["image_url"]
+    else:
+        # No ground truth available, use first image
+        logger.info("No ground truth render blueprint available, using first image")
+        image_bytes = new_image_infos[0]["image_bytes"]
+        image_url = new_image_infos[0]["image_url"]
+    
+    return image_bytes, image_url

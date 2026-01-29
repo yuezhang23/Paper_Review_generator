@@ -18,6 +18,7 @@ from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
 import httpx
 import markdown
+import requests
 
 
 # Set up logging
@@ -27,13 +28,20 @@ logger = logging.getLogger(__name__)
 # Import from parent utils module (not summary_generator/utils)
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from utils import file_storage, UPLOAD_DIR
-from openreview_service import fetch_and_save_openreview_paper, parse_openreview_info_from_text, search_openreview_by_title
 
 # Import from summary_generator modules
-from .embeddings import embed_texts, build_rag_index, VectorIndex
-from .utils import grobid_parse, parse_tei_xml, extract_metadata_from_grobid_api
-from .cache import get_pdf_hash, load_cached_index
+from vector_embedding.embeddings import embed_texts, build_rag_index, VectorIndex
+from vector_embedding.utils_grobid import extract_metadata_from_grobid_api
+
+# Import helper functions (non-LLM related)
+from .helpers import (
+    load_prompt_template,
+    format_prompt_template,
+    resolve_pdf_path,
+    format_review_as_markdown,
+    render_markdown_to_html,
+    create_split_screen_view
+)
 
 # Review queries for summary generation
 REVIEW_QUERIES = {
@@ -54,45 +62,6 @@ router = APIRouter(prefix="/api", tags=["summary"])
 from utils import get_ai_client
 ai_client = get_ai_client()
 
-# Prompt template directory
-PROMPT_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "prompt_template")
-
-
-def load_prompt_template(template_name: str) -> str:
-    """
-    Load a prompt template from a markdown file.
-    
-    Args:
-        template_name: Name of the template file (without .md extension)
-        
-    Returns:
-        Template content as string
-    """
-    template_path = os.path.join(PROMPT_TEMPLATE_DIR, f"{template_name}.md")
-    try:
-        with open(template_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        logger.error(f"Prompt template not found: {template_path}")
-        raise
-    except Exception as e:
-        logger.error(f"Error loading prompt template {template_name}: {str(e)}")
-        raise
-
-
-def format_prompt_template(template: str, **kwargs) -> str:
-    """
-    Format a prompt template by replacing placeholders.
-    
-    Args:
-        template: Template string with placeholders like {query}, {retrieved_content}, etc.
-        **kwargs: Values to replace placeholders
-        
-    Returns:
-        Formatted prompt string
-    """
-    return template.format(**kwargs)
-
 
 class SummaryRequest(BaseModel):
     file_ids: Optional[List[str]] = None
@@ -104,114 +73,8 @@ class SummaryRequest(BaseModel):
     table_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
 
 
+
 # ImageGenerationRequest moved to image_method_generator.py
-
-
-async def resolve_pdf_path(
-    file_ids: Optional[List[str]] = None,
-    paper_url: Optional[str] = None,
-    paper_name: Optional[str] = None,
-    use_openreview: bool = None
-) -> str:
-    """
-    Resolve PDF file path from request parameters.
-    Downloads/saves PDF if needed and returns local file path.
-    
-    Returns:
-        Path to PDF file on local filesystem
-    """
-    # Priority 1: Extract from uploaded files
-    if file_ids and len(file_ids) > 0:
-        # Use uploaded PDFs (now saved to disk during upload)
-        for file_id in file_ids:
-            if file_id in file_storage:
-                file_info = file_storage[file_id]
-                if file_info.get('content_type') == 'application/pdf' or file_info.get('pdf_path'):
-                    pdf_path = file_info.get('pdf_path')
-                    if pdf_path and os.path.exists(pdf_path):
-                        return pdf_path
-                    else:
-                        raise HTTPException(
-                            status_code=404,
-                            detail=f"PDF file {file_id} not found on disk. Please re-upload the file."
-                        )
-    
-    # Priority 2: Extract from OpenReview URL
-    if paper_url and use_openreview and 'openreview.net' in paper_url:
-        try:
-            parsed_info = parse_openreview_info_from_text(paper_url)
-            paper_ids = parsed_info.get('paper_ids', [])
-            if paper_ids:
-                paper_id = paper_ids[0]
-                paper_data = await fetch_and_save_openreview_paper(paper_id)
-                if paper_data and paper_data.get('pdf_path'):
-                    return paper_data['pdf_path']
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Error fetching paper from OpenReview: {str(e)}"
-            )
-    
-    # Priority 3: Download from URL
-    if paper_url:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(paper_url, follow_redirects=True)
-                if response.status_code == 200 and 'pdf' in response.headers.get('content-type', ''):
-                    # Save to temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                        tmp_file.write(response.content)
-                        return tmp_file.name
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Error downloading PDF from URL: {str(e)}"
-            )
-    
-    # Priority 4: Search by paper name (OpenReview)
-    if paper_name and use_openreview:
-        try:
-            logger.info(f"[Resolve PDF] Searching OpenReview for paper: {paper_name}")
-            papers = await search_openreview_by_title(paper_name, limit=1)
-            if papers and len(papers) > 0:
-                matched_paper = papers[0]
-                paper_id = matched_paper.get('id') or matched_paper.get('paper_id')
-                if paper_id:
-                    logger.info(f"[Resolve PDF] Found paper ID: {paper_id}, fetching PDF...")
-                    paper_data = await fetch_and_save_openreview_paper(paper_id)
-                    if paper_data and paper_data.get('pdf_path'):
-                        logger.info(f"[Resolve PDF] PDF path resolved from OpenReview search: {paper_data['pdf_path']}")
-                        return paper_data['pdf_path']
-                    else:
-                        raise HTTPException(
-                            status_code=404,
-                            detail=f"PDF not found for paper '{paper_name}' (ID: {paper_id})"
-                        )
-                else:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Could not extract paper ID from search results for '{paper_name}'"
-                    )
-            else:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No papers found matching '{paper_name}' on OpenReview"
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"[Resolve PDF] Error searching OpenReview by name: {str(e)}\n{traceback.format_exc()}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error searching for paper '{paper_name}': {str(e)}"
-            )
-    
-    raise HTTPException(
-        status_code=400,
-        detail="No valid PDF source provided. Please provide file_ids, paper_url, or paper_name."
-    )
-
-
 async def build_paper_embeddings(
     file_ids: Optional[List[str]] = None,
     paper_url: Optional[str] = None,
@@ -222,7 +85,6 @@ async def build_paper_embeddings(
 ) -> tuple[str, VectorIndex, Dict[str, Any]]:
     """
     Steps 1-5: Embedding-related processing pipeline.
-    
     Implements the embedding pipeline:
     1. PDF → GROBID → structured sections
     2. Tables → Camelot / Tabula (text-first)
@@ -287,11 +149,23 @@ async def build_paper_embeddings(
             table_extraction_method=table_extraction
         )
         logger.info(f"[Embeddings Step 3] RAG index built successfully. Index contains {len(index.texts)} text chunks")
+    except requests.exceptions.ConnectionError as e:
+        # GROBID connection error - return 503 Service Unavailable
+        error_msg = str(e)
+        logger.error(f"[Embeddings Step 3] GROBID connection error: {error_msg}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"GROBID service is not available. {error_msg}\n\n"
+                   f"To start GROBID, run:\n"
+                   f"  docker-compose -f docker-compose.grobid.yml up -d\n\n"
+                   f"Or verify GROBID is running:\n"
+                   f"  curl http://localhost:8070/api/isalive"
+        )
     except Exception as e:
         logger.error(f"[Embeddings Step 3] Failed to build RAG index: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error building RAG index: {str(e)}\nFull traceback: {traceback.format_exc()}"
+            detail=f"Error building RAG index: {str(e)}"
         )
     
     # Step 4: Extract paper metadata
@@ -361,6 +235,23 @@ async def query_and_synthesize_summary(
     try:
         markdown_review = format_review_as_markdown(metadata, answers)
         logger.info(f"[Query Step 7] Markdown review formatted. Length: {len(markdown_review)} characters")
+        # Step 7b: Render markdown to HTML content
+        logger.info("[Query Step 7b] Rendering markdown to HTML...")
+        html_content = None
+        try:
+            html_content = render_markdown_to_html(markdown_review)
+            logger.info(f"[Query Step 7b] HTML review rendered ({len(html_content)} chars)")
+        except Exception as e:
+            logger.error(f"[Query Step 7b] Failed to render HTML: {str(e)}\n{traceback.format_exc()}")
+            # Don't fail the request if HTML rendering fails, just log it
+            html_content = None
+        
+        logger.info("[Query] Query and synthesis pipeline completed successfully")
+        return {
+            "answers": answers,
+            "markdown_review": markdown_review,
+            "html_content": html_content
+        }
     except Exception as e:
         logger.error(f"[Query Step 7] Failed to format review: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
@@ -368,24 +259,7 @@ async def query_and_synthesize_summary(
             detail=f"Error formatting review: {str(e)}\nFull traceback: {traceback.format_exc()}"
         )
     
-    # Step 7b: Render markdown to HTML content
-    logger.info("[Query Step 7b] Rendering markdown to HTML...")
-    html_content = None
-    try:
-        html_content = render_markdown_to_html(markdown_review)
-        logger.info(f"[Query Step 7b] HTML review rendered ({len(html_content)} chars)")
-    except Exception as e:
-        logger.error(f"[Query Step 7b] Failed to render HTML: {str(e)}\n{traceback.format_exc()}")
-        # Don't fail the request if HTML rendering fails, just log it
-        html_content = None
     
-    logger.info("[Query] Query and synthesis pipeline completed successfully")
-    return {
-        "answers": answers,
-        "markdown_review": markdown_review,
-        "html_content": html_content
-    }
-
 
 @router.post("/summary")
 async def paper_summary(request: SummaryRequest):
@@ -492,26 +366,21 @@ async def synthesize_answer(index, query: str, model: str = "supermind-agent-v1"
     try:
         retrieved_content = chr(10).join(retrieved)
         logger.info(f"[Synthesize] Retrieved content length: {len(retrieved_content)} characters")
+
+        user_prompt_template = None
+        # Try to load synthesis template, fallback to basic prompt if not found
+        try:
+            user_prompt_template = load_prompt_template("synthesis_user_prompt_template")
+        except Exception:
+            user_prompt_template = "Query: {query}\n\nRetrieved Content:\n{retrieved_content}\n\nPlease provide a comprehensive answer based on the retrieved content."
         
-        # Build format constraints based on section type
-        format_instructions = ""
-        if section_name == "summary":
-            format_instructions = load_prompt_template("summary_format_instructions")
-        else:
-            format_instructions = load_prompt_template("section_format_instructions")
-        
-        # Load prompt templates
-        system_prompt = load_prompt_template("paper_analysis_system_prompt")
-        user_prompt_template = load_prompt_template("synthesis_user_prompt_template")
         user_prompt = format_prompt_template(
             user_prompt_template,
             query=query,
             retrieved_content=retrieved_content
         )
-        
-        # Append format instructions to user prompt
-        if format_instructions:
-            user_prompt = f"{user_prompt}\n\n{format_instructions}"
+        # Load prompt templates
+        system_prompt = load_prompt_template("paper_analysis_system_prompt")
         
         # Run API call in thread pool for async execution
         response = await asyncio.to_thread(
@@ -576,459 +445,4 @@ async def synthesize_multiple_queries(
     return answers
 
 
-def format_review_as_markdown(
-    metadata: Dict[str, Any],
-    answers: Dict[str, str]
-) -> str:
-    """
-    Format the review answers into a structured markdown document following the template.
-    Adds section anchors for navigation.
-    
-    Args:
-        metadata: Dictionary with title, authors, year, venue
-        answers: Dictionary mapping section names to answers
-        
-    Returns:
-        Formatted markdown string with section anchors
-    """
-    # Format authors list
-    authors_str = ", ".join(metadata.get("authors", [])) if metadata.get("authors") else "N/A"
-    
-    # Section mapping for anchors
-    section_anchors = {
-        "summary": "summary",
-        "strengths": "strengths",
-        "weaknesses": "weaknesses",
-        "innovations": "innovations",
-        "contributions": "contributions",
-        "limitations": "limitations",
-        "rating": "rating"
-    }
-    
-    markdown = f"""# Paper Review
-
-        ## Paper Intro
-
-        **Title:** {metadata.get("title", "Unknown Title")}
-
-        **Authors:** {authors_str}
-
-        **Year:** {metadata.get("year", "N/A")}
-
-        **Conference:** {metadata.get("venue", "N/A")}
-
-        ## Summary
-
-        {answers.get("summary", "No summary available.")}
-
-        ## Strengths
-
-        {answers.get("strengths", "No strengths analysis available.")}
-
-        ## Weaknesses
-
-        {answers.get("weaknesses", "No weaknesses analysis available.")}
-
-        ## Innovations or Novelty
-
-        {answers.get("innovations", "No innovations analysis available.")}
-
-        ## Contributions
-
-        {answers.get("contributions", "No contributions analysis available.")}
-
-        ## Limitations or Questions or Ambiguities
-
-        {answers.get("limitations", "No limitations analysis available.")}
-
-        ## Rating Score
-
-        {answers.get("rating", "No rating available.")}
-
-        ---
-        *This review was automatically generated using an AI-powered paper analysis system.*
-    """
-    return markdown
-
-
-def render_markdown_to_html(markdown_content: str) -> str:
-    """
-    Render markdown content to HTML body content (without full document structure).
-    CSS styling is handled by the frontend.
-    
-    Args:
-        markdown_content: Markdown string to render
-        
-    Returns:
-        HTML body content as string (ready for frontend rendering)
-    """
-    # Convert markdown to HTML (with fallback if extensions are not available)
-    extensions = ['extra', 'tables', 'fenced_code']
-    # Only add codehilite if pygments is available
-    try:
-        import pygments
-        extensions.append('codehilite')
-    except ImportError:
-        logger.debug("[HTML] Pygments not available, skipping codehilite extension")
-    
-    try:
-        html_content = markdown.markdown(
-            markdown_content,
-            extensions=extensions
-        )
-    except Exception as e:
-        logger.warning(f"[HTML] Markdown extensions failed, using basic conversion: {str(e)}")
-        html_content = markdown.markdown(markdown_content)
-    
-    # Add anchors to section headings for navigation
-    import re
-    def add_anchor_to_heading(match):
-        heading_text = match.group(2)
-        heading_level = match.group(1)
-        heading_id = re.sub(r'[^\w\s-]', '', heading_text.lower()).strip().replace(' ', '-').replace('--', '-')
-        return f'<h{heading_level} id="{heading_id}">{heading_text}</h{heading_level}>'
-    
-    html_content = re.sub(r'<h([1-6])>(.*?)</h\1>', add_anchor_to_heading, html_content)
-    
-    logger.info(f"[HTML] Rendered markdown to HTML content ({len(html_content)} chars)")
-    return html_content
-
-
-def create_split_screen_view(
-    pdf_path: str,
-    markdown_review: str,
-    output_path: str,
-    metadata: Dict[str, Any]
-) -> str:
-    """
-    Create a split-screen HTML view with PDF on the left and summary on the right.
-    Each summary section can highlight corresponding sections in the original paper.
-    
-    Args:
-        pdf_path: Path to the original PDF file
-        markdown_review: Markdown content of the review
-        output_path: Path where HTML file should be saved
-        metadata: Paper metadata dictionary
-        
-    Returns:
-        Path to the generated split-screen HTML file
-    """
-    # Convert markdown to HTML
-    extensions = ['extra', 'tables', 'fenced_code']
-    try:
-        import pygments
-        extensions.append('codehilite')
-    except ImportError:
-        pass
-    
-    try:
-        html_content = markdown.markdown(markdown_review, extensions=extensions)
-    except Exception as e:
-        html_content = markdown.markdown(markdown_review)
-    
-    # Add anchors to headings
-    import re
-    def add_anchor_to_heading(match):
-        heading_text = match.group(2)
-        heading_level = match.group(1)
-        heading_id = re.sub(r'[^\w\s-]', '', heading_text.lower()).strip().replace(' ', '-').replace('--', '-')
-        return f'<h{heading_level} id="{heading_id}" class="review-section">{heading_text}</h{heading_level}>'
-    
-    html_content = re.sub(r'<h([1-6])>(.*?)</h\1>', add_anchor_to_heading, html_content)
-    
-    # Get PDF filename for embedding
-    pdf_filename = os.path.basename(pdf_path)
-    # Use a placeholder or API endpoint for PDF serving
-    # In production, this should be served via a backend endpoint
-    pdf_url = f"file://{pdf_path}"  # For local development, use file:// protocol
-    # Alternative: pdf_url = f"/api/files/{pdf_filename}"  # If served by backend
-    
-    # Create split-screen HTML
-    split_html = f"""<!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Paper Review - Split View</title>
-        <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }}
-            
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                height: 100vh;
-                overflow: hidden;
-                background-color: #f5f5f5;
-            }}
-            
-            .top-nav {{
-                position: fixed;
-                top: 0;
-                right: 0;
-                z-index: 1000;
-                background-color: #ffffff;
-                padding: 10px 20px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                border-bottom-left-radius: 8px;
-            }}
-            
-            .nav-button {{
-                background-color: #3498db;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 14px;
-                margin-left: 10px;
-            }}
-            
-            .nav-button:hover {{
-                background-color: #2980b9;
-            }}
-            
-            .split-container {{
-                display: flex;
-                height: 100vh;
-                padding-top: 60px;
-            }}
-            
-            .left-panel {{
-                width: 50%;
-                height: calc(100vh - 60px);
-                border-right: 2px solid #ddd;
-                background-color: #ffffff;
-                overflow: hidden;
-                position: relative;
-            }}
-            
-            .right-panel {{
-                width: 50%;
-                height: calc(100vh - 60px);
-                overflow-y: auto;
-                background-color: #ffffff;
-                padding: 20px 40px;
-            }}
-            
-            .pdf-viewer {{
-                width: 100%;
-                height: 100%;
-                border: none;
-            }}
-            
-            .pdf-placeholder {{
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                height: 100%;
-                color: #666;
-                flex-direction: column;
-                padding: 40px;
-                text-align: center;
-            }}
-            
-            .pdf-placeholder h3 {{
-                margin-bottom: 20px;
-                color: #333;
-            }}
-            
-            .section-navigation {{
-                position: sticky;
-                top: 0;
-                background-color: #ffffff;
-                padding: 15px 0;
-                border-bottom: 1px solid #e0e0e0;
-                margin-bottom: 20px;
-                z-index: 10;
-            }}
-            
-            .section-nav-list {{
-                list-style: none;
-                display: flex;
-                flex-wrap: wrap;
-                gap: 10px;
-            }}
-            
-            .section-nav-item {{
-                background-color: #f0f0f0;
-                padding: 6px 12px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 13px;
-                transition: background-color 0.2s;
-            }}
-            
-            .section-nav-item:hover {{
-                background-color: #e0e0e0;
-            }}
-            
-            .review-section {{
-                scroll-margin-top: 100px;
-            }}
-            
-            .review-section:target {{
-                background-color: #fff3cd;
-                padding: 10px;
-                border-left: 4px solid #ffc107;
-                margin-left: -14px;
-                padding-left: 18px;
-                transition: all 0.3s ease;
-            }}
-            
-            h1 {{
-                color: #1a1a1a;
-                border-bottom: 3px solid #333;
-                padding-bottom: 10px;
-                margin-bottom: 30px;
-            }}
-            
-            h2 {{
-                color: #2c3e50;
-                margin-top: 30px;
-                border-bottom: 2px solid #e0e0e0;
-                padding-bottom: 8px;
-            }}
-            
-            h3 {{
-                color: #34495e;
-                margin-top: 25px;
-            }}
-            
-            .right-panel {{
-                line-height: 1.6;
-                color: #333333;
-            }}
-            
-            code {{
-                background-color: #f4f4f4;
-                padding: 2px 6px;
-                border-radius: 3px;
-                font-family: 'Courier New', monospace;
-            }}
-            
-            pre {{
-                background-color: #f8f8f8;
-                padding: 15px;
-                border-radius: 5px;
-                overflow-x: auto;
-                border-left: 4px solid #3498db;
-            }}
-            
-            table {{
-                border-collapse: collapse;
-                width: 100%;
-                margin: 20px 0;
-            }}
-            
-            th, td {{
-                border: 1px solid #ddd;
-                padding: 12px;
-                text-align: left;
-            }}
-            
-            th {{
-                background-color: #f2f2f2;
-                font-weight: bold;
-            }}
-            
-            @media (max-width: 768px) {{
-                .split-container {{
-                    flex-direction: column;
-                }}
-                
-                .left-panel, .right-panel {{
-                    width: 100%;
-                    height: 50vh;
-                }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="top-nav">
-            <button class="nav-button" onclick="window.open(window.location.href.replace('_split_view.html', '_review.html'), '_blank')">View Full Review</button>
-            <button class="nav-button" onclick="window.print()">Print Review</button>
-        </div>
-        
-        <div class="split-container">
-            <div class="left-panel">
-                <iframe src="{pdf_url}" class="pdf-viewer" type="application/pdf">
-                    <div class="pdf-placeholder">
-                        <h3>PDF Viewer</h3>
-                        <p>PDF file: {pdf_filename}</p>
-                        <p><small>Note: PDF viewing requires browser PDF support or a PDF.js viewer.</small></p>
-                    </div>
-                </iframe>
-            </div>
-            
-            <div class="right-panel">
-                <div class="section-navigation">
-                    <ul class="section-nav-list">
-                        <li class="section-nav-item" onclick="scrollToSection('summary')">Summary</li>
-                        <li class="section-nav-item" onclick="scrollToSection('strengths')">Strengths</li>
-                        <li class="section-nav-item" onclick="scrollToSection('weaknesses')">Weaknesses</li>
-                        <li class="section-nav-item" onclick="scrollToSection('innovations')">Innovations</li>
-                        <li class="section-nav-item" onclick="scrollToSection('contributions')">Contributions</li>
-                        <li class="section-nav-item" onclick="scrollToSection('limitations')">Limitations</li>
-                        <li class="section-nav-item" onclick="scrollToSection('rating')">Rating</li>
-                    </ul>
-                </div>
-                {html_content}
-            </div>
-        </div>
-        
-        <script>
-            function scrollToSection(sectionId) {{
-                const element = document.getElementById(sectionId);
-                if (element) {{
-                    element.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                    // Update URL hash
-                    window.location.hash = sectionId;
-                    // Highlight the section
-                    element.style.transition = 'background-color 0.3s';
-                    setTimeout(() => {{
-                        element.style.backgroundColor = '';
-                    }}, 2000);
-                }}
-            }}
-            
-            // Handle hash changes on page load
-            window.addEventListener('load', () => {{
-                if (window.location.hash) {{
-                    const sectionId = window.location.hash.substring(1);
-                    setTimeout(() => scrollToSection(sectionId), 100);
-                }}
-            }});
-        </script>
-    </body>
-    </html>"""
-    
-    # Save split-screen HTML file
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(split_html)
-    
-    logger.info(f"[SplitView] Created split-screen view: {output_path}")
-    return output_path
-
-
-# Import image generation functionality from separate module
-from image_methodos_generator.image_method_generator import ImageGenerationRequest, generate_summary_image
-
-
-@router.post("/generate-summary-image")
-async def generate_summary_image_endpoint(request: ImageGenerationRequest):
-    """Generate a methodology diagram image from paper content using AI Builder API 
-    
-    This endpoint is now decoupled from the summary endpoint and can work independently.
-    It accepts the same input parameters as the summary endpoint (file_ids, paper_url, paper_name).
-    
-    Steps:
-    1. Resolve PDF path and build/load RAG index if needed
-    2. Query RAG index for step-by-step methodology interpretation
-    3. Parse retrieved embeddings as context
-    4. Generate whiteboard diagram image
-    """
-    return await generate_summary_image(request)
 

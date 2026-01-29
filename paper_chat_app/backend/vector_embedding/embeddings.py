@@ -1,16 +1,25 @@
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import faiss
 import numpy as np
 import logging
 import traceback
 import platform
 import asyncio
+import threading
 from typing import List, Tuple, Optional
 from FlagEmbedding import FlagAutoModel
 import camelot
 import tabula
 import fitz
-from .utils import grobid_parse, select_important_tables_figures
+from .utils_grobid import grobid_parse, select_important_tables_figures
+from utils import file_storage
+from openreview_service import (
+    fetch_and_save_openreview_paper,
+    parse_openreview_info_from_text,
+    search_openreview_by_title
+)
 from .figure_table_ocr import (
     enrich_figures_with_ocr,
     enrich_tables_with_ocr
@@ -30,6 +39,10 @@ from .cache import (
     load_cached_index,
     save_cached_index
 )
+from utils import web_search_for_paper_pdf
+from fastapi import HTTPException
+import httpx
+import tempfile
 
 # Fix OpenMP issues on Apple Silicon (M1/M2/M3)
 # Prevents "OMP: Error #179: Function Can't open SHM2 failed" errors
@@ -46,6 +59,165 @@ logger = logging.getLogger(__name__)
 
 # Lazy load model to avoid loading on import
 _model = None
+_model_lock = threading.Lock()  # Lock for thread-safe model initialization
+
+
+async def resolve_pdf_path(
+    file_ids: Optional[List[str]] = None,
+    paper_url: Optional[str] = None,
+    paper_name: Optional[str] = None,
+    use_openreview: bool = None
+) -> str:
+    """
+    Resolve PDF file path from request parameters.
+    Downloads/saves PDF if needed and returns local file path.
+    
+    Returns:
+        Path to PDF file on local filesystem
+    """
+    # Priority 1: Extract from uploaded files
+    if file_ids and len(file_ids) > 0:
+        # Use uploaded PDFs (now saved to disk during upload)
+        for file_id in file_ids:
+            if file_id in file_storage:
+                file_info = file_storage[file_id]
+                if file_info.get('content_type') == 'application/pdf' or file_info.get('pdf_path'):
+                    pdf_path = file_info.get('pdf_path')
+                    if pdf_path and os.path.exists(pdf_path):
+                        return pdf_path
+                    else:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"PDF file {file_id} not found on disk. Please re-upload the file."
+                        )
+                        
+    # Priority 2: Extract from OpenReview URL
+    if paper_url and use_openreview and 'openreview.net' in paper_url:
+        try:
+            parsed_info = parse_openreview_info_from_text(paper_url)
+            paper_ids = parsed_info.get('paper_ids', [])
+            if paper_ids:
+                paper_id = paper_ids[0]
+                paper_data = await fetch_and_save_openreview_paper(paper_id)
+                if paper_data and paper_data.get('pdf_path'):
+                    return paper_data['pdf_path']
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Error fetching paper from OpenReview: {str(e)}"
+            )
+    
+    # Priority 3: Download from URL
+    if paper_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(paper_url, follow_redirects=True)
+                if response.status_code == 200 and 'pdf' in response.headers.get('content-type', ''):
+                    # Save to temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                        tmp_file.write(response.content)
+                        return tmp_file.name
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error downloading PDF from URL: {str(e)}"
+            )
+    
+    # Priority 4: Search by paper name (OpenReview, then web search fallback)
+    # if paper_name and use_openreview:
+    #     openreview_404: Optional[HTTPException] = None
+    #     try:
+    #         logger.info(f"[Resolve PDF] Searching OpenReview for paper: {paper_name}")
+    #         papers = await search_openreview_by_title(paper_name, limit=1)
+    #         if papers and len(papers) > 0:
+    #             matched_paper = papers[0]
+    #             paper_id = matched_paper.get('id') or matched_paper.get('paper_id')
+    #             if paper_id:
+    #                 logger.info(f"[Resolve PDF] Found paper ID: {paper_id}, fetching PDF...")
+    #                 paper_data = await fetch_and_save_openreview_paper(paper_id)
+    #                 if paper_data and paper_data.get('pdf_path'):
+    #                     logger.info(f"[Resolve PDF] PDF path resolved from OpenReview search: {paper_data['pdf_path']}")
+    #                     return paper_data['pdf_path']
+    #                 else:
+    #                     openreview_404 = HTTPException(
+    #                         status_code=404,
+    #                         detail=f"PDF not found for paper '{paper_name}' (ID: {paper_id})"
+    #                     )
+    #             else:
+    #                 openreview_404 = HTTPException(
+    #                     status_code=404,
+    #                     detail=f"Could not extract paper ID from search results for '{paper_name}'"
+    #                 )
+    #         else:
+    #             openreview_404 = HTTPException(
+    #                 status_code=404,
+    #                 detail=f"No papers found matching '{paper_name}' on OpenReview"
+    #             )
+    #     except HTTPException as e:
+    #         if e.status_code != 404:
+    #             raise
+    #         openreview_404 = e
+    #     except Exception as e:
+    #         logger.error(f"[Resolve PDF] Error searching OpenReview by name: {str(e)}")
+    #         raise HTTPException(
+    #             status_code=500,
+    #             detail=f"Error searching for paper '{paper_name}': {str(e)}"
+    #         )
+
+    #     # Fallback: web search via AI Builder /v1/search/ when OpenReview fails (404)
+    #     if openreview_404 is not None:
+    #         logger.info(f"[Resolve PDF] OpenReview failed for '{paper_name}', trying web search...")
+    #         try:
+    #             pdf_url = await web_search_for_paper_pdf(paper_name)
+    #             if pdf_url:
+    #                 async with httpx.AsyncClient() as client:
+    #                     response = await client.get(pdf_url, follow_redirects=True)
+    #                     if response.status_code != 200:
+    #                         raise ValueError(f"HTTP {response.status_code}")
+    #                     ctype = (response.headers.get("content-type") or "").lower()
+    #                     is_pdf = "pdf" in ctype or pdf_url.lower().endswith(".pdf")
+    #                     if not is_pdf and len(response.content) >= 5:
+    #                         is_pdf = response.content[:5] == b"%PDF-"
+    #                     if is_pdf:
+    #                         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    #                             tmp.write(response.content)
+    #                             path = tmp.name
+    #                         logger.info(f"[Resolve PDF] PDF path resolved from web search: {path}")
+    #                         return path
+    #         except Exception as e:
+    #             logger.warning(f"[Resolve PDF] Web search fallback failed: {e}")
+    #         raise openreview_404
+
+    # Priority 5: Paper name with OpenReview disabled — web search only
+    if paper_name:
+        try:
+            pdf_url = await web_search_for_paper_pdf(paper_name)
+            if pdf_url:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(pdf_url, follow_redirects=True)
+                    if response.status_code != 200:
+                        raise ValueError(f"HTTP {response.status_code}")
+                    ctype = (response.headers.get("content-type") or "").lower()
+                    is_pdf = "pdf" in ctype or pdf_url.lower().endswith(".pdf")
+                    if not is_pdf and len(response.content) >= 5:
+                        is_pdf = response.content[:5] == b"%PDF-"
+                    if is_pdf:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                            tmp.write(response.content)
+                            path = tmp.name
+                        logger.info(f"[Resolve PDF] PDF path resolved from web search: {path}")
+                        return path
+        except Exception as e:
+            logger.warning(f"[Resolve PDF] Web search for paper name failed: {e}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No PDF found for paper '{paper_name}' via web search."
+        )
+    
+    raise HTTPException(
+        status_code=400,
+        detail="No valid PDF source provided. Please provide file_ids, paper_url, or paper_name."
+    )
 
 
 def extract_tables(pdf_path):
@@ -110,39 +282,43 @@ def extract_figures(pdf_path, out_dir="figures"):
     return figure_paths
 
 def get_embedding_model():
-    """Get or initialize the embedding model (lazy loading)"""
+    """Get or initialize the embedding model (lazy loading with thread safety)"""
     global _model
+    # Double-checked locking pattern for thread-safe initialization
     if _model is None:
-        # Disable FP16 on Apple Silicon to prevent segmentation faults
-        # FP16 support is problematic on M1/M2/M3 chips
-        is_apple = platform.system() == 'Darwin' and platform.machine() == 'arm64'
-        use_fp16 = not is_apple
-        
-        if is_apple:
-            logger.info("[Embeddings] Detected Apple Silicon - disabling FP16 for compatibility")
-        
-        logger.info(f"[Embeddings] Loading FlagAutoModel: BAAI/bge-base-en-v1.5 (FP16={use_fp16})...")
-        try:
-            _model = FlagAutoModel.from_finetuned('BAAI/bge-base-en-v1.5',
-                                                  query_instruction_for_retrieval="Represent this sentence for searching relevant passages:",
-                                                  use_fp16=use_fp16)  # Normalize embeddings at model initialization
-            logger.info("[Embeddings] Model loaded successfully")
-        except Exception as e:
-            logger.error(f"[Embeddings] Failed to load model: {str(e)}\n{traceback.format_exc()}")
-            # If FP16 fails even on non-Apple Silicon, retry with FP16 disabled
-            if use_fp16:
-                logger.warning("[Embeddings] FP16 failed, retrying with FP32...")
+        with _model_lock:
+            # Check again after acquiring lock (another thread might have loaded it)
+            if _model is None:
+                # Disable FP16 on Apple Silicon to prevent segmentation faults
+                # FP16 support is problematic on M1/M2/M3 chips
+                is_apple = platform.system() == 'Darwin' and platform.machine() == 'arm64'
+                use_fp16 = not is_apple
+                
+                if is_apple:
+                    logger.info("[Embeddings] Detected Apple Silicon - disabling FP16 for compatibility")
+                
+                logger.info(f"[Embeddings] Loading FlagAutoModel: BAAI/bge-base-en-v1.5 (FP16={use_fp16})...")
                 try:
                     _model = FlagAutoModel.from_finetuned('BAAI/bge-base-en-v1.5',
                                                           query_instruction_for_retrieval="Represent this sentence for searching relevant passages:",
-                                                          use_fp16=False,
-                                                          normalize_embeddings=True)  # Normalize embeddings at model initialization
-                    logger.info("[Embeddings] Model loaded successfully with FP32")
-                except Exception as retry_error:
-                    logger.error(f"[Embeddings] Failed to load model with FP32: {str(retry_error)}\n{traceback.format_exc()}")
-                    raise
-            else:
-                raise
+                                                          use_fp16=use_fp16)  # Normalize embeddings at model initialization
+                    logger.info("[Embeddings] Model loaded successfully")
+                except Exception as e:
+                    logger.error(f"[Embeddings] Failed to load model: {str(e)}\n{traceback.format_exc()}")
+                    # If FP16 fails even on non-Apple Silicon, retry with FP16 disabled
+                    if use_fp16:
+                        logger.warning("[Embeddings] FP16 failed, retrying with FP32...")
+                        try:
+                            _model = FlagAutoModel.from_finetuned('BAAI/bge-base-en-v1.5',
+                                                                  query_instruction_for_retrieval="Represent this sentence for searching relevant passages:",
+                                                                  use_fp16=False,
+                                                                  normalize_embeddings=True)  # Normalize embeddings at model initialization
+                            logger.info("[Embeddings] Model loaded successfully with FP32")
+                        except Exception as retry_error:
+                            logger.error(f"[Embeddings] Failed to load model with FP32: {str(retry_error)}\n{traceback.format_exc()}")
+                            raise
+                    else:
+                        raise
     return _model
 
 

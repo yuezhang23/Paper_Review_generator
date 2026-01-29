@@ -89,10 +89,138 @@ superlinear_ws/
 │   ├── test_openreview_search.py  # Test script for OpenReview API
 │   ├── requirements_openreview.txt # Python dependencies
 │   └── OPENREVIEW_MCP_README.md   # Detailed MCP setup instructions
+├── paper_chat_app/
+│   └── backend/
+│       └── orchestrator_backup/   # Backup MCP orchestrator gateway (FastAPI + LangGraph)
 ├── docs/
 │   └── README.md                  # This file
 └── .gitignore                     # Git ignore rules
 ```
+
+## Backup MCP Orchestrator Gateway (`orchestrator_backup`)
+
+The `paper_chat_app/backend/orchestrator_backup` module implements a **backup AI orchestrator** that can replace the original MCP/AI Builder gateway when it is unavailable.
+
+### What the backup orchestrator provides
+
+1. **FastAPI app + CORS**
+   - App entrypoint: `paper_chat_app/backend/orchestrator_backup/main.py`
+   - Runs as a standalone service (e.g. on port `8010`).
+
+2. **Gateway auth (shared token)**
+   - All orchestrator routes require:
+     - `Authorization: Bearer <token>`
+   - Token is read from an environment variable:
+     - `MCP_GATEWAY_TOKEN` (configurable via `mcp_gateway_config.yaml`).
+
+3. **MCP-style provider config**
+   - Config file: `paper_chat_app/backend/orchestrator_backup/mcp_gateway_config.yaml`
+   - Loaded via:
+     - `MCP_GATEWAY_CONFIG_PATH` (optional, overrides default path).
+   - Each provider entry defines:
+     - `name`: logical provider name (e.g. `ai_builders`, `openai`)
+     - `type`: currently `openai_compatible`
+     - `base_url`: upstream OpenAI-compatible URL
+     - `api_key_env`: env var with the upstream API key
+     - `models`: list of model IDs routed to this provider
+
+4. **Chat orchestration (LangGraph)**
+   - Graph defined in: `orchestrator_backup/graph.py`
+   - Steps:
+     1. **Route node** selects provider based on `model` and config.
+     2. **Call-provider node**:
+        - Builds a `ChatOpenAI` client (from `langchain-openai`) pointing at the provider’s `base_url`.
+        - Invokes the model with the OpenAI chat messages from the request.
+        - Returns an OpenAI-compatible `chat.completion` JSON.
+   - Exposed as OpenAI-compatible endpoints:
+     - `GET /backend/v1/models`
+       - Returns `{"object": "list", "data": [...]}` for all configured models.
+     - `POST /backend/v1/chat/completions`
+       - Accepts standard chat body: `{ "model": "...", "messages": [...], ... }`
+       - Returns `chat.completion` response.
+
+5. **Agentic methodology image flow (reusing `image_methodos_generator`)**
+   - A second LangGraph (`build_image_agent_graph`) orchestrates the full methodology-image pipeline:
+     1. Resolve PDF + build/load RAG index (`resolve_pdf_and_index`).
+     2. Retrieve methodology chunks (`retrieve_methodology_chunks`).
+     3. Combine & validate chunks (`combine_and_validate_chunks`).
+     4. Generate step-by-step interpretation with an LLM (`generate_interpretation`).
+     5. Save interpretation and create a request directory (`save_interpretation_and_create_request_dir`).
+     6. Generate a whiteboard/render prompt via the three-layer generator (`generate_whiteboard_prompt`).
+     7. Generate and rank images (`generate_image`), returning the best one.
+   - This agentic flow is exposed via:
+     - `POST /backend/v1/agents/methodology/summary-image`
+     - Request body: `ImageGenerationRequest` (same fields as `/api/generate-summary-image` in the main backend).
+     - Response includes:
+       - `image_url`: path/URL of the chosen image
+       - `image_bytes_b64`: base64-encoded image bytes
+       - `revised_prompt`: final whiteboard/render prompt
+       - `methodology_steps`: interpreted step-by-step methodology text
+
+### Step-by-step: running the backup orchestrator
+
+1. **Install backend dependencies** (from repo root):
+   ```bash
+   cd paper_chat_app/backend
+   pip install -r requirements.txt
+   ```
+2. **Set required environment variables**:
+   ```bash
+   export MCP_GATEWAY_TOKEN="your-shared-token"
+   export AI_BUILDER_TOKEN="your-ai-builder-or-backend-key"   # if using ai_builders provider
+   # Optional: additional providers (e.g. OpenAI)
+   # export OPENAI_API_KEY="sk-..."
+   # Optional: custom config path
+   # export MCP_GATEWAY_CONFIG_PATH="/abs/path/to/mcp_gateway_config.yaml"
+   ```
+3. **Start the backup orchestrator**:
+   ```bash
+   uvicorn orchestrator_backup.main:app --host 0.0.0.0 --port 8010
+   ```
+4. **List available models**:
+   ```bash
+   curl -sS http://localhost:8010/backend/v1/models \
+     -H "Authorization: Bearer $MCP_GATEWAY_TOKEN"
+   ```
+5. **Call chat completions through the backup gateway**:
+   ```bash
+   curl -sS http://localhost:8010/backend/v1/chat/completions \
+     -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "model": "grok-4-fast",
+       "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+       "temperature": 0.2
+     }'
+   ```
+6. **Run the methodology image agent**:
+   ```bash
+   curl -sS http://localhost:8010/backend/v1/agents/methodology/summary-image \
+     -H "Authorization: Bearer $MCP_GATEWAY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "file_ids": ["<uploaded-file-id>"],
+       "figure_extraction_method": "none",
+       "table_extraction_method": "none"
+     }'
+   ```
+
+### Step-by-step: switching the main backend to use the backup
+
+The existing `paper_chat_app/backend` code uses an OpenAI-compatible client for the AI Builder gateway. You can redirect it to the backup orchestrator without code changes:
+
+1. **Point the base URL to the backup**:
+   ```bash
+   export AI_BUILDER_BASE_URL="http://localhost:8010/backend/v1"
+   ```
+2. **Use the gateway token as the AI key**:
+   ```bash
+   export AI_BUILDER_TOKEN="$MCP_GATEWAY_TOKEN"
+   ```
+3. **Restart the main backend**:
+   - All calls that previously went to the hosted AI Builder endpoint will now route through the local backup orchestrator, including:
+     - `/api/chat`, `/api/get-paper-reviews`, etc.
+     - The multi-agent `supermind-agent-v1` flows.
 
 ## Example: Searching for Papers
 

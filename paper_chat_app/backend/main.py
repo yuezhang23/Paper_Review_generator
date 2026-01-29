@@ -22,10 +22,12 @@ from utils import (
     PAPER_QUERY_SUGGESTIONS,
     upload_files,
     get_ai_client,
+    get_ai_builder_base_url,
 )
 
 # Import service routers
 from summary_generator.main import router as summary_router
+from image_methodos_generator.main import router as image_methodos_generator_router
 from chatbot_service import router as chatbot_router
 
 
@@ -52,7 +54,7 @@ app.add_middleware(
 # Register service routers
 app.include_router(summary_router)
 app.include_router(chatbot_router)
-
+app.include_router(image_methodos_generator_router)
 # Shared Request/Response models (used by general endpoints)
 class PaperSearchRequest(BaseModel):
     query: str
@@ -102,7 +104,7 @@ async def get_available_models():
         # Get models from AI Builder API
         async with httpx.AsyncClient() as http_client:
             response = await http_client.get(
-                "https://space.ai-builders.com/backend/v1/models",
+                f"{get_ai_builder_base_url()}/models",
                 headers={"Authorization": f"Bearer {ai_builder_token}"}
             )
             if response.status_code == 200:

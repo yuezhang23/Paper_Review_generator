@@ -38,3 +38,6 @@ langchain-core>=0.1.0  # Core LangChain abstractions
 langchain-openai>=0.0.5  # OpenAI integration (for AI Builder API compatibility)
 langgraph>=0.0.20  # LangGraph for multi-agent workflows
 langsmith>=0.0.80  # Optional: LangSmith for monitoring and debugging
+
+# Config loading
+PyYAML>=6.0
