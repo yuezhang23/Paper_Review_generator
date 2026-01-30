@@ -1,43 +1,22 @@
+# Shared endpoint: all providers use the LiteLLM proxy.
+# Proxy config (model_list, keys) is in litellm_config.yaml. Run: litellm --config litellm_config.yaml
 gateway:
-  # The env var holding the shared gateway token required by clients.
   token_env: MCP_GATEWAY_TOKEN
 
 providers:
-  # Provider 1: AI Builders (OpenAI-compatible) - can be kept as a fallback,
-  # or replaced with your own OpenAI-compatible upstream(s).
-  - name: ai_builders
-    type: openai_compatible
-    base_url: https://space.ai-builders.com/backend/v1
-    api_key_env: AI_BUILDER_TOKEN
-    timeout_s: 120
-    default_model: grok-4-fast
-    models:
-      - grok-4-fast
-      - gpt-5
-      - gemini-2.5-pro
-      - gemini-3-flash-preview
-      - deepseek
-      - supermind-agent-v1
-
-  # Provider 2: LiteLLM Proxy (OpenAI-compatible) - one key, all LLMs.
+  # Single provider: LiteLLM Proxy (shared endpoint from litellm_config.yaml).
   # Set LITELLM_PROXY_BASE_URL (e.g. http://localhost:4000) and LITELLM_PROXY_KEY.
-  # Proxy routes to OpenAI, Anthropic, etc.; model names match LiteLLM config (e.g. gpt-4o, claude-3-5-sonnet).
   - name: litellm_proxy
     type: openai_compatible
     base_url: http://localhost:4000
     base_url_env: LITELLM_PROXY_BASE_URL
     api_key_env: LITELLM_PROXY_KEY
     timeout_s: 120
-    default_model: gpt-4o-mini
+    default_model: gpt-5
     models:
       - gpt-4o-mini
-      - gpt-4o
-      - gpt-4.1-mini
-      - gpt-4-turbo
-      - o1-mini
-      - o1-preview
+      - gpt-5
+      - openai/gpt-image-1.5
       - claude-3-5-sonnet-20241022
-      - claude-3-opus-20240229
       - gemini/gemini-1.5-pro
-      - gemini/gemini-1.5-flash
-
+      - gemini/gemini-3.0-flash-preview

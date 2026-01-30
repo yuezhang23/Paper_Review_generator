@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Allow running as script: ensure backend/ is on path for image_methodos_generator
+_backend = Path(__file__).resolve().parent.parent
+if str(_backend) not in sys.path:
+    sys.path.insert(0, str(_backend))
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .auth import require_bearer_token
-from .config import GatewayConfig, list_all_models, load_gateway_config
-from .graph import build_chat_graph, build_image_agent_graph
+from auth import require_bearer_token
+from config import GatewayConfig, list_all_models, load_gateway_config
+from graph import build_chat_graph, build_image_agent_graph
 from image_methodos_generator.image_method_generator import ImageGenerationRequest
 
 
@@ -33,7 +40,13 @@ def create_app() -> FastAPI:
     )
     cfg: GatewayConfig = load_gateway_config(cfg_path)
     chat_graph = build_chat_graph(cfg)
-    image_graph = build_image_agent_graph(cfg)
+    _image_graph: Optional[Any] = None
+
+    def get_image_graph():
+        nonlocal _image_graph
+        if _image_graph is None:
+            _image_graph = build_image_agent_graph(cfg)
+        return _image_graph
 
     app = FastAPI(title="Backup MCP Orchestrator Gateway", version="0.1.0")
 
@@ -82,6 +95,15 @@ def create_app() -> FastAPI:
         Agentic endpoint that mirrors /api/generate-summary-image, but runs the
         full image-methodology pipeline through a LangGraph.
         """
+        try:
+            image_graph = get_image_graph()
+        except RuntimeError as e:
+            if "Missing API key" in str(e):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Image pipeline unavailable: set LITELLM_PROXY_KEY (or the provider API key env) and retry.",
+                ) from e
+            raise
         state = {"request": req.model_dump()}
         out = await image_graph.ainvoke(state)
 

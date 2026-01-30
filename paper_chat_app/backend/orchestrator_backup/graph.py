@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
-from .config import GatewayConfig, get_provider_for_model
-from .llm_clients import (
+from config import GatewayConfig, get_provider_for_model
+from llm_clients import (
     from_ai_message,
     get_openai_client,
     get_openai_compatible_chat_model,
@@ -174,7 +174,6 @@ def _make_whiteboard_prompt_node(cfg: GatewayConfig):
             interpretation_path, request_dir, ai_client=ai_client
         )
         return {"whiteboard_prompt": whiteboard_prompt}
-
     return _node
 
 

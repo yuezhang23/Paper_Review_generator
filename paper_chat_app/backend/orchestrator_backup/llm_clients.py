@@ -7,7 +7,7 @@ import openai
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from .config import ProviderConfig
+from config import ProviderConfig
 
 
 def to_langchain_messages(messages: List[Dict[str, Any]]) -> List[BaseMessage]:

@@ -1,0 +1,30 @@
+# PostgreSQL for LiteLLM Proxy (UI login, keys, spend tracking).
+# LiteLLM uses PostgreSQL only (Prisma); MongoDB cannot be used for the proxy DB.
+#
+# Start:  docker compose -f docker-compose.litellm-db.yml up -d
+# Stop:   docker compose -f docker-compose.litellm-db.yml down
+#
+# Then set DATABASE_URL and run the proxy (use port 5433 if host 5432 is in use), e.g.:
+# export DATABASE_URL="postgresql://litellm:litellm@127.0.0.1:5433/litellm"
+# litellm --config litellm_config.yaml
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: litellm-postgres
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    ports:
+      - "5433:5432"   # host:container — use 5433 on host to avoid conflict with local PostgreSQL on 5432
+    volumes:
+      - litellm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  litellm_pgdata:
