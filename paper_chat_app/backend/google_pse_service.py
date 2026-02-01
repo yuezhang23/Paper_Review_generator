@@ -1,7 +1,7 @@
 """
 Google Programmable Search Engine (PSE) Service Module
 Handles real-time web search using Google Custom Search API
-Works for all models except supermind-agent-v1
+Works with OpenAI, Gemini, and DeepSeek models
 """
 
 import os

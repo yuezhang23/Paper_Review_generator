@@ -20,13 +20,8 @@ from typing import Any, Dict, Optional
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Import from parent utils module
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from utils import get_ai_client
-
-# Reasoning model to use for generation
-REASONING_MODEL = "supermind-agent-v1"
+# Reasoning model (must be in gateway model list: gpt-4o-mini, gemini/gemini-1.5-pro, deepseek/deepseek-chat)
+REASONING_MODEL = "gpt-4o-mini"
 layer_1_json = json.load(open(os.path.join(os.path.dirname(__file__), 'layer_1_temp.json'), 'r'))
 layer_2_json = json.load(open(os.path.join(os.path.dirname(__file__), 'layer_2_temp.json'), 'r'))
 
@@ -52,9 +47,17 @@ def load_methodology_description(file_path: str) -> str:
         raise
 
 
-async def generate_layer1_logic(methodology_text: str, ai_client: Optional[Any] = None) -> Dict[str, Any]:
-    if ai_client is None:
-        ai_client = get_ai_client()
+def _reasoning_model(model: Optional[str] = None) -> str:
+    """Return model for chat completions; use provided model or REASONING_MODEL."""
+    return (model or REASONING_MODEL).strip() or REASONING_MODEL
+
+
+async def generate_layer1_logic(methodology_text: str, ai_client: Any, model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Generate logic layer (Layer 1) from methodology text. ai_client must be provided by the caller (e.g. LangGraph).
+    model: optional; when provided (e.g. from gateway config), used for chat completions.
+    """
+    effective_model = _reasoning_model(model)
     system_prompt = """You are an expert at analyzing methodology descriptions and extracting structured logical representations. 
 Your task is to generate a COMPLETE JSON structure that represents the symbolic graph specification of a methodology workflow.
 
@@ -91,7 +94,7 @@ Follow the structure and rules specified above, Generate a full JSON structure.
         try:
             response = await asyncio.to_thread(
                 ai_client.chat.completions.create,
-                model=REASONING_MODEL,
+                model=effective_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -158,9 +161,12 @@ Follow the structure and rules specified above, Generate a full JSON structure.
                 continue
             raise e
     
-async def generate_layer2_layout(logic_layer: Dict[str, Any], ai_client: Optional[Any] = None) -> Dict[str, Any]:
-    if ai_client is None:
-        ai_client = get_ai_client()
+async def generate_layer2_layout(logic_layer: Dict[str, Any], ai_client: Any, model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Generate layout layer (Layer 2) from logic layer. ai_client must be provided by the caller (e.g. LangGraph).
+    model: optional; when provided (e.g. from gateway config), used for chat completions.
+    """
+    effective_model = _reasoning_model(model)
     system_prompt = """You are an expert at designing single-page infographic layouts for methodology workflows.
 
 Your task is to generate a COMPLETE JSON structure that defines the layout blueprint for rendering the logic layer as a visual diagram. This layer makes the graph drawable without inventing structure.
@@ -195,7 +201,7 @@ Generate the ENTIRE JSON structure - do not stop until you've included all regio
         try:
             response = await asyncio.to_thread(
                 ai_client.chat.completions.create,
-                model=REASONING_MODEL,
+                model=effective_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -235,10 +241,13 @@ Generate the ENTIRE JSON structure - do not stop until you've included all regio
 
 
 async def generate_layer3_render(
-    logic_layer: Dict[str, Any], layout_layer: Dict[str, Any], ai_client: Optional[Any] = None
+    logic_layer: Dict[str, Any], layout_layer: Dict[str, Any], ai_client: Any, model: Optional[str] = None
 ) -> str:
-    if ai_client is None:
-        ai_client = get_ai_client()
+    """
+    Generate render layer (Layer 3) from logic and layout. ai_client must be provided by the caller (e.g. LangGraph).
+    model: optional; when provided (e.g. from gateway config), used for chat completions.
+    """
+    effective_model = _reasoning_model(model)
     system_prompt = """You are an expert at converting structured workflow logic and layout JSON into a COMPLETE, deterministic Render Blueprint for a diffusion-based image generator.
 
 Your job is NOT to summarize.  
@@ -305,7 +314,7 @@ Output must include both GLOBAL INVENTORY and PLACEMENT ORDER. Any omission will
         try:
             response = await asyncio.to_thread(
                 ai_client.chat.completions.create,
-                model=REASONING_MODEL,
+                model=effective_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -347,11 +356,19 @@ Output must include both GLOBAL INVENTORY and PLACEMENT ORDER. Any omission will
 
 
 async def generate_three_layers(
-    methodology_text: str, output_dir: Optional[str] = None, ai_client: Optional[Any] = None
+    methodology_text: str,
+    output_dir: Optional[str] = None,
+    *,
+    ai_client: Any,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+    Generate all three layers. ai_client must be provided by the caller (e.g. LangGraph).
+    model: optional text model for chat completions; when None, uses REASONING_MODEL.
+    """
     # Generate Layer 1 (Logic)
     logger.info(f"Generating Layer 1 (Logic)...")
-    layer1 = await generate_layer1_logic(methodology_text, ai_client=ai_client)
+    layer1 = await generate_layer1_logic(methodology_text, ai_client=ai_client, model=model)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -363,7 +380,7 @@ async def generate_three_layers(
 
     # Generate Layer 2 (Layout) - depends on Layer 1
     logger.info("Generating Layer 2 (Layout)...")
-    layer2 = await generate_layer2_layout(layer1, ai_client=ai_client)
+    layer2 = await generate_layer2_layout(layer1, ai_client=ai_client, model=model)
 
     # Save Layer 2 as JSON
     layer2_path = os.path.join(output_dir, "layer2_layout.json")
@@ -372,7 +389,7 @@ async def generate_three_layers(
     logger.info(f"Layer 2 saved to: {layer2_path}")
 
     # Generate Layer 3 (Render) - depends on both Layer 1 and Layer 2
-    layer3 = await generate_layer3_render(layer1, layer2, ai_client=ai_client)
+    layer3 = await generate_layer3_render(layer1, layer2, ai_client=ai_client, model=model)
     # Save Layer 3 as text
     layer3_path = os.path.join(output_dir, "layer3_render.txt")
     with open(layer3_path, 'w', encoding='utf-8') as f:
@@ -388,8 +405,16 @@ async def generate_three_layers(
 
 
 async def generate_from_file(
-    input_file_path: str, output_dir: Optional[str] = None, ai_client: Optional[Any] = None
+    input_file_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    ai_client: Any,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+    Generate three layers from an interpretation file. ai_client must be provided by the caller (e.g. LangGraph).
+    model: optional text model for chat completions; when None, uses REASONING_MODEL.
+    """
     # Load methodology description
     methodology_text = load_methodology_description(input_file_path)
 
@@ -398,7 +423,8 @@ async def generate_from_file(
         os.makedirs(output_dir, exist_ok=True)
 
     # Generate layers
-    return await generate_three_layers(methodology_text, output_dir, ai_client=ai_client)
+    return await generate_three_layers(methodology_text, output_dir, ai_client=ai_client, model=model)
+
 
 # from .images.test_image import generate_image
 # if __name__ == "__main__":

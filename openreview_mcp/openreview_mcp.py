@@ -7,6 +7,27 @@ A Model Context Protocol server that wraps the OpenReview Python SDK.
 import os
 from pathlib import Path
 from typing import Optional, Dict, List, Any
+
+# Workaround: FastMCP 2.x passes tracebacks_max_frames to RichHandler, which Rich < 13.8
+# does not support. Patch RichHandler to accept and ignore the extra kwarg before importing FastMCP.
+def _patch_rich_handler():
+    try:
+        from rich.logging import RichHandler
+        import inspect
+        sig = inspect.signature(RichHandler.__init__)
+        if "tracebacks_max_frames" not in sig.parameters:
+            _orig_init = RichHandler.__init__
+
+            def _patched_init(self, *args, **kwargs):
+                kwargs.pop("tracebacks_max_frames", None)
+                _orig_init(self, *args, **kwargs)
+
+            RichHandler.__init__ = _patched_init
+    except Exception:
+        pass
+
+_patch_rich_handler()
+
 from fastmcp import FastMCP
 import openreview
 

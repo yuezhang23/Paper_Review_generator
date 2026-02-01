@@ -13,10 +13,7 @@ logger = logging.getLogger(__name__)
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from utils import get_ai_client
-
-
-ai_client = get_ai_client()
+from utils import get_ai_client  # lazy: call inside functions to avoid startup failure when token unset
 
 
 # ----------------------------
@@ -156,6 +153,7 @@ def openai_inpaint_patch(
         mask_path = mask_file.name
 
     try:
+        ai_client = get_ai_client()
         # size: if you omit, it uses input image size; you can also set e.g. "1024x1024"
         # NOTE: Keep patch sizes reasonable; very tiny patches can behave oddly.
         with open(img_path, "rb") as img_f, open(mask_path, "rb") as mask_f:

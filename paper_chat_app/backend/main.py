@@ -1,11 +1,14 @@
 """
 FastAPI Backend for Academic Paper Analysis Chat Application
 Integrates with AI Builder API (Grok) and OpenReview API
+
+Architecture:
+- Port 8000 (this app): NON-LLM endpoints only (upload, get-paper-reviews, files, etc.)
+- Port 8010 (gateway): ALL LLM endpoints (chat, summary, generate-summary-image, models)
+  Run gateway: python -m orchestrator_backup.main  OR  ./start.sh --with-gateway
 """
 
 import os
-import httpx
-import asyncio
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
 from fastapi.responses import FileResponse
@@ -13,7 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openreview_service import (
-    get_openreview_client,
     search_openreview_by_title,
     fetch_and_save_openreview_paper,
 )
@@ -21,18 +23,9 @@ from utils import (
     file_storage,
     PAPER_QUERY_SUGGESTIONS,
     upload_files,
-    get_ai_client,
-    get_ai_builder_base_url,
 )
 
-# Import service routers
-from summary_generator.main import router as summary_router
-from image_methodos_generator.main import router as image_methodos_generator_router
-from chatbot_service import router as chatbot_router
-
-
 import logging
-import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="Paper Analysis Chat API")
+app = FastAPI(title="Paper Analysis Chat API (Non-LLM)")
 
 # CORS middleware
 app.add_middleware(
@@ -51,11 +44,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register service routers
-app.include_router(summary_router)
-app.include_router(chatbot_router)
-app.include_router(image_methodos_generator_router)
-# Shared Request/Response models (used by general endpoints)
+# NOTE: LLM routers (summary, chatbot, image_methodos_generator) run on the gateway (port 8010)
+# See orchestrator_backup/main.py
+
 class PaperSearchRequest(BaseModel):
     query: str
     venue: Optional[str] = None
@@ -79,6 +70,10 @@ class PaperContext(BaseModel):
     reviews: Optional[List[Dict[str, Any]]] = None
     metadata: Dict[str, Any]
 
+# ---------------------------------------------------------------------------
+# NON-LLM endpoints (port 8000). LLM endpoints run on gateway (port 8010).
+# ---------------------------------------------------------------------------
+
 # Constants are imported from utils module
 @app.get("/")
 async def root():
@@ -93,78 +88,34 @@ async def get_suggestions():
     """Get paper-related query suggestions"""
     return {"suggestions": PAPER_QUERY_SUGGESTIONS}
 
-@app.get("/api/models")
-async def get_available_models():
-    """Get list of available AI models"""
-    try:
-        ai_builder_token = os.getenv("AI_BUILDER_TOKEN")
-        if not ai_builder_token:
-            raise HTTPException(status_code=500, detail="AI_BUILDER_TOKEN not configured")
-        
-        # Get models from AI Builder API
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.get(
-                f"{get_ai_builder_base_url()}/models",
-                headers={"Authorization": f"Bearer {ai_builder_token}"}
-            )
-            if response.status_code == 200:
-                models_data = response.json()
-                # Filter and format available models
-                available_models = [
-                {
-                    "id": "grok-4-fast",
-                    "name": "Grok-4 Fast",
-                    "description": "Fast and efficient model from X.AI"
-                },
-                {
-                    "id": "gpt-5",
-                    "name": "GPT-5",
-                    "description": "OpenAI GPT-5 model"
-                },
-                {
-                    "id": "gemini-2.5-pro",
-                    "name": "Gemini 2.5 Pro",
-                    "description": "Google's Gemini 2.5 Pro model"
-                },
-                {
-                    "id": "gemini-3-flash-preview",
-                    "name": "Gemini 3 Flash",
-                    "description": "Fast Gemini reasoning model"
-                },
-                {
-                    "id": "deepseek",
-                    "name": "DeepSeek",
-                    "description": "Fast and cost-effective chat model"
-                },
-                {
-                    "id": "supermind-agent-v1",
-                    "name": "Supermind Agent",
-                    "description": "Multi-tool agent with web search capabilities"
-                }
-                ]
-                return {"models": available_models}
-            else:
-                # Return default models if API call fails
-                return {
-                    "models": [
-                        {"id": "grok-4-fast", "name": "Grok-4 Fast", "description": "Fast and efficient model"},
-                        {"id": "gpt-5", "name": "GPT-5", "description": "OpenAI GPT-5 model"},
-                        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Google's Gemini model"},
-                        {"id": "deepseek", "name": "DeepSeek", "description": "Fast and cost-effective"},
-                        {"id": "supermind-agent-v1", "name": "Supermind Agent", "description": "Multi-tool agent with search"}
-                    ]
-                }
-    except Exception as e:
-        # Return default models on error
-        return {
-            "models": [
-                {"id": "grok-4-fast", "name": "Grok-4 Fast", "description": "Fast and efficient model"},
-                {"id": "gpt-5", "name": "GPT-5", "description": "OpenAI GPT-5 model"},
-                {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Google's Gemini model"},
-                {"id": "deepseek", "name": "DeepSeek", "description": "Fast and cost-effective"},
-                {"id": "supermind-agent-v1", "name": "Supermind Agent", "description": "Multi-tool agent with search"}
-            ]
-        }
+
+@app.get("/api/file-info")
+async def get_file_info(file_ids: str):
+    """
+    Resolve file_ids to file metadata (for gateway to fetch when processing chat/summary/image with file_ids).
+    Gateway (8010) calls this when it receives requests with file_ids; main backend (8000) has file_storage.
+    """
+    ids = [x.strip() for x in file_ids.split(",") if x.strip()]
+    if not ids:
+        return {"files": {}}
+    result = {}
+    for fid in ids:
+        if fid in file_storage:
+            info = file_storage[fid]
+            pdf_path = info.get("pdf_path")
+            if pdf_path and os.path.isabs(pdf_path):
+                pass
+            elif pdf_path:
+                pdf_path = os.path.abspath(os.path.join(os.path.dirname(__file__), pdf_path))
+            result[fid] = {
+                "filename": info.get("filename"),
+                "content_type": info.get("content_type"),
+                "size": info.get("size"),
+                "text_content": info.get("text_content", ""),
+                "pdf_path": pdf_path,
+            }
+    return {"files": result}
+
 
 @app.post("/api/get-paper-reviews")
 async def get_paper_reviews(request: PaperReviewRequest):

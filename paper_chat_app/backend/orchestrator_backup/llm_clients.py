@@ -38,21 +38,22 @@ def from_ai_message(msg: AIMessage) -> str:
 
 @lru_cache(maxsize=64)
 def _chat_model_cache_key(
-    provider_name: str,
-    base_url: str,
-    api_key: str,
-    model: str,
-    timeout_s: float,
-) -> str:
-    return f"{provider_name}|{base_url}|{model}|{timeout_s}|{hash(api_key)}"
+        provider_name: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout_s: float,
+    ) -> str:
+        return f"{provider_name}|{base_url}|{model}|{timeout_s}|{hash(api_key)}"
 
 
 def get_openai_compatible_chat_model(
-    provider: ProviderConfig,
-    model: str,
-    temperature: float,
-    max_tokens: int | None,
-) -> ChatOpenAI:
+        provider: ProviderConfig,
+        model: str,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ChatOpenAI:
+    
     api_key = provider.api_key
     if not api_key:
         raise RuntimeError(f"Missing API key env var: {provider.api_key_env} for provider {provider.name}")

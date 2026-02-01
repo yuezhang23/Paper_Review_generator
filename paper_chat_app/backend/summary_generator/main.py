@@ -58,9 +58,8 @@ REVIEW_QUERIES = {
 # Create router for summary endpoints
 router = APIRouter(prefix="/api", tags=["summary"])
 
-# Import AI client from parent utils
-from utils import get_ai_client
-ai_client = get_ai_client()
+# Import AI client from parent utils (lazy: call get_ai_client() inside endpoints to avoid startup failure when token unset)
+from utils import get_ai_client, ensure_file_info_from_main_backend
 
 
 class SummaryRequest(BaseModel):
@@ -68,7 +67,7 @@ class SummaryRequest(BaseModel):
     paper_url: Optional[str] = None
     paper_name: Optional[str] = None
     use_openreview: Optional[bool] = True
-    model: Optional[str] = "supermind-agent-v1"
+    model: Optional[str] = None
     figure_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
     table_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
 
@@ -189,7 +188,7 @@ async def build_paper_embeddings(
 async def query_and_synthesize_summary(
     index: VectorIndex,
     metadata: Dict[str, Any],
-    model: str = "supermind-agent-v1",
+    model: str = "gpt-4o-mini",
     queries: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """
@@ -202,7 +201,7 @@ async def query_and_synthesize_summary(
     Args:
         index: VectorIndex built from paper content
         metadata: Paper metadata dictionary
-        model: Model ID to use for synthesis (default: "supermind-agent-v1")
+        model: Model ID to use for synthesis (default: "gpt-4o-mini")
         queries: Optional dictionary of queries (defaults to REVIEW_QUERIES if not provided)
     
     Returns:
@@ -264,7 +263,8 @@ async def query_and_synthesize_summary(
 @router.post("/summary")
 async def paper_summary(request: SummaryRequest):
     """
-    Paper summary endpoint implementing the full pipeline architecture:
+    Paper summary endpoint implementing the full pipeline architecture.
+    When running on gateway (8010), fetches file info from main backend (8000) for file_ids.
     
     1. PDF → GROBID → structured sections
     2. Tables → Camelot / Tabula (text-first)
@@ -278,6 +278,10 @@ async def paper_summary(request: SummaryRequest):
     """
     pdf_path = None
     try:
+        # When on gateway (8010), fetch file info from main backend (8000) for file_ids
+        if request.file_ids:
+            await ensure_file_info_from_main_backend(request.file_ids)
+        
         logger.info(f"[Step 1] Starting summary request with: file_ids={request.file_ids}, paper_url={request.paper_url}, paper_name={request.paper_name}")
         
         # Steps 1-5: Build embeddings and index
@@ -291,7 +295,7 @@ async def paper_summary(request: SummaryRequest):
         )
         
         # Steps 6-7: Query and synthesize
-        model = request.model or "supermind-agent-v1"
+        model = request.model or "gpt-4o-mini"
         query_results = await query_and_synthesize_summary(
             index=index,
             metadata=metadata,
@@ -303,7 +307,13 @@ async def paper_summary(request: SummaryRequest):
             "summary": query_results["markdown_review"],
             "markdown": query_results["markdown_review"],
             "html_content": query_results["html_content"],
-            "metadata": metadata,
+            "metadata": {
+                **metadata,
+                "pdf_path": pdf_path,
+                "file_ids": request.file_ids,
+                "paper_url": request.paper_url,
+                "paper_name": request.paper_name,
+            },
             "sections": query_results["answers"],
             "pdf_path": pdf_path
         }
@@ -326,14 +336,14 @@ async def paper_summary(request: SummaryRequest):
                 logger.warning(f"[Cleanup] Failed to remove temporary file: {str(e)}")
 
 
-async def synthesize_answer(index, query: str, model: str = "supermind-agent-v1", section_name: str = None):
+async def synthesize_answer(index, query: str, model: str = "gpt-4o-mini", section_name: str = None):
     """
     Step 6 & 7: Query-driven retrieval and final synthesis (async optimized)
     
     Args:
         index: VectorIndex built from paper content
         query: Query string for summary generation
-        model: Model ID to use for synthesis (default: "supermind-agent-v1")
+        model: Model ID to use for synthesis (default: "gpt-4o-mini")
         section_name: Optional section name to apply format constraints (e.g., "summary")
         
     Returns:
@@ -364,6 +374,7 @@ async def synthesize_answer(index, query: str, model: str = "supermind-agent-v1"
     # Final synthesis using GPT model
     logger.info(f"[Synthesize] Step 7: Calling AI model '{model}' for final synthesis...")
     try:
+        ai_client = get_ai_client()
         retrieved_content = chr(10).join(retrieved)
         logger.info(f"[Synthesize] Retrieved content length: {len(retrieved_content)} characters")
 
@@ -409,7 +420,7 @@ async def synthesize_answer(index, query: str, model: str = "supermind-agent-v1"
 async def synthesize_multiple_queries(
     index, 
     queries: Dict[str, str], 
-    model: str = "supermind-agent-v1"
+    model: str = "gpt-4o-mini"
 ) -> Dict[str, str]:
     """
     Execute multiple queries in parallel and synthesize answers for each.

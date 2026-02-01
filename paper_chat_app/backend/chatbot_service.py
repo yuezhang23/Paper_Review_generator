@@ -24,7 +24,8 @@ from utils import (
     get_ai_client,
     predict_search_benefit_score,
     web_search_paper,
-    find_related_documents_ai_builder
+    find_related_documents_ai_builder,
+    ensure_file_info_from_main_backend,
 )
 from summary_logs.summary_logger import log_paper_summary_if_needed
 
@@ -426,6 +427,8 @@ async def verify_and_rephrase_paper_query(query: str, model: str = "grok-4-fast"
 async def chat(request: ChatRequest):
     """Chat endpoint with paper context and optional OpenReview integration.
     
+    When running on gateway (8010), fetches file info from main backend (8000) for file_ids.
+    
     Flow:
     1. Verify if query is about a paper and rephrase if needed
     2. Determine if we should use real-time search based on query
@@ -437,6 +440,10 @@ async def chat(request: ChatRequest):
     allowing for context-aware questions based on conversation history.
     """
     try:
+        # When on gateway (8010), fetch file info from main backend (8000) for file_ids
+        if request.file_ids:
+            await ensure_file_info_from_main_backend(request.file_ids)
+        
         model = request.model or "grok-4-fast"
         
         # Extract query from the last user message
@@ -802,6 +809,10 @@ async def chat_multi_model(request: MultiModelChatRequest):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint"""
+    # When on gateway (8010), fetch file info from main backend (8000) for file_ids
+    if request.file_ids:
+        await ensure_file_info_from_main_backend(request.file_ids)
+    
     async def generate():
         try:
             messages = []

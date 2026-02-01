@@ -1,22 +1,24 @@
 # Shared endpoint: all providers use the LiteLLM proxy.
-# Proxy config (model_list, keys) is in litellm_config.yaml. Run: litellm --config litellm_config.yaml
+# OpenAI, Gemini, DeepSeek, xAI (OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, XAI_API_KEY in .env).
+# Run: litellm --config litellm_config.yaml
 gateway:
   token_env: MCP_GATEWAY_TOKEN
 
 providers:
-  # Single provider: LiteLLM Proxy (shared endpoint from litellm_config.yaml).
-  # Set LITELLM_PROXY_BASE_URL (e.g. http://localhost:4000) and LITELLM_PROXY_KEY.
   - name: litellm_proxy
     type: openai_compatible
     base_url: http://localhost:4000
     base_url_env: LITELLM_PROXY_BASE_URL
     api_key_env: LITELLM_PROXY_KEY
     timeout_s: 120
-    default_model: gpt-5
+    default_model: grok-4-fast
     models:
-      - gpt-4o-mini
+      - grok-4-fast
       - gpt-5
+      - gpt-4o-mini
+      - gpt-4o
       - openai/gpt-image-1.5
-      - claude-3-5-sonnet-20241022
       - gemini/gemini-1.5-pro
-      - gemini/gemini-3.0-flash-preview
+      - gemini/gemini-1.5-flash
+      - deepseek/deepseek-chat
+      - deepseek/deepseek-coder

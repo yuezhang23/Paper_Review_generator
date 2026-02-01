@@ -84,17 +84,71 @@ The MCP server provides the following tools:
 
 ```
 superlinear_ws/
-├── openreview_mcp/
-│   ├── openreview_mcp.py          # Main MCP server implementation
-│   ├── test_openreview_search.py  # Test script for OpenReview API
-│   ├── requirements_openreview.txt # Python dependencies
-│   └── OPENREVIEW_MCP_README.md   # Detailed MCP setup instructions
-├── paper_chat_app/
-│   └── backend/
-│       └── orchestrator_backup/   # Backup MCP orchestrator gateway (FastAPI + LangGraph)
+├── .gitignore
+├── .gitmodules
 ├── docs/
-│   └── README.md                  # This file
-└── .gitignore                     # Git ignore rules
+│   ├── deployment-prompt.md
+│   └── README.md                     # This file
+├── openreview_mcp/
+│   ├── docs/                         # Sample PDF text outputs
+│   │   ├── k7l7p1yVZj/
+│   │   └── RbGQ7xlfu1/
+│   ├── openreview_mcp.py             # Main MCP server implementation
+│   ├── OPENREVIEW_MCP_README.md      # Detailed MCP setup instructions
+│   └── requirements_openreview.txt   # Python dependencies
+└── paper_chat_app/
+    ├── .gitignore
+    ├── start.sh                      # App startup script
+    ├── backend/
+    │   ├── main.py                   # FastAPI app entrypoint
+    │   ├── chatbot_service.py
+    │   ├── openreview_service.py
+    │   ├── google_pse_service.py
+    │   ├── utils.py
+    │   ├── requirements.txt
+    │   ├── image_methodos_generator/ # Methodology → image pipeline
+    │   │   ├── main.py
+    │   │   ├── image_method_generator.py
+    │   │   ├── image_edit.py
+    │   │   ├── image_optimizer.py
+    │   │   ├── three_layer_generator.py
+    │   │   ├── methodology_utils.py
+    │   │   ├── prompt_utils.py
+    │   │   └── prompts/              # LLM prompts for methodology interpretation
+    │   ├── orchestrator_backup/      # Backup MCP orchestrator (FastAPI + LangGraph)
+    │   │   ├── main.py
+    │   │   ├── graph.py
+    │   │   ├── config.py
+    │   │   ├── auth.py
+    │   │   ├── llm_clients.py
+    │   │   ├── mcp_gateway_config.yaml
+    │   │   └── litellm_config.yaml
+    │   ├── summary_generator/        # Paper summary / synthesis
+    │   │   ├── main.py
+    │   │   ├── helpers.py
+    │   │   └── prompts/
+    │   ├── summary_logs/              # Summary logging
+    │   └── vector_embedding/          # RAG, embeddings, figure/table OCR
+    │       ├── embeddings.py
+    │       ├── cache.py
+    │       ├── figure_table_ocr.py
+    │       └── figure_table_multimodal.py
+    ├── frontend/                     # Next.js app
+    │   ├── app/
+    │   │   ├── layout.tsx
+    │   │   ├── page.tsx
+    │   │   └── globals.css
+    │   ├── components/
+    │   │   ├── ChatTab.tsx
+    │   │   ├── ImageTab.tsx
+    │   │   ├── PaperInputForm.tsx
+    │   │   └── SummaryTab.tsx
+    │   ├── next.config.mjs
+    │   ├── package.json
+    │   └── tailwind.config.js
+    └── eval/                         # Evaluation / review rating
+        ├── eval.py
+        └── rate_reviews.py
 ```
 
 ## Backup MCP Orchestrator Gateway (`orchestrator_backup`)

@@ -37,6 +37,43 @@ PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 # In-memory file storage (for demo - use proper storage in production)
 file_storage: Dict[str, Dict[str, Any]] = {}
 
+# When gateway runs on port 8010, it fetches file info from main backend (8000) for file_ids
+MAIN_BACKEND_URL = os.getenv("MAIN_BACKEND_URL", "").rstrip("/")
+
+
+async def ensure_file_info_from_main_backend(file_ids: Optional[List[str]]) -> None:
+    """
+    When running on gateway (port 8010), fetch file info from main backend (8000) and populate file_storage.
+    Call this at the start of chat/summary/image endpoints when request has file_ids.
+    """
+    if not file_ids or not MAIN_BACKEND_URL:
+        return
+    missing = [fid for fid in file_ids if fid not in file_storage]
+    if not missing:
+        return
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{MAIN_BACKEND_URL}/api/file-info",
+                params={"file_ids": ",".join(missing)},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                for fid, info in data.get("files", {}).items():
+                    file_storage[fid] = {
+                        "filename": info.get("filename"),
+                        "content_type": info.get("content_type"),
+                        "size": info.get("size"),
+                        "text_content": info.get("text_content", ""),
+                        "pdf_path": info.get("pdf_path"),
+                        "file_id": fid,
+                    }
+                log.info(f"Fetched file info for {len(data.get('files', {}))} file(s) from main backend")
+    except Exception as e:
+        log.warning(f"Failed to fetch file info from main backend: {e}")
+
 
 # ============================================================================
 # File and Text Extraction Functions
@@ -317,23 +354,36 @@ def get_ai_builder_base_url() -> str:
     """
     Base URL for the AI Builders-compatible gateway.
 
-    Default points to the hosted AI Builders orchestrator. To fail over to the
-    local backup gateway, set:
+    - When USE_GATEWAY_ORCHESTRATOR=true: gateway is on same server (port 8010) by default
+    - Otherwise defaults to hosted AI Builders or explicit AI_BUILDER_BASE_URL
 
-      AI_BUILDER_BASE_URL="http://localhost:8010/backend/v1"
-
-    Note: this value is used for both the OpenAI-compatible chat endpoint and the
-    search endpoint in this codebase.
+    To use the local gateway (LiteLLM + LangGraph) on the same server:
+      USE_GATEWAY_ORCHESTRATOR=true
+      AI_BUILDER_TOKEN=<MCP_GATEWAY_TOKEN>  # same as gateway auth
+      # Optional: GATEWAY_ORCHESTRATOR_URL="http://localhost:8010" (default when merged)
     """
+    if os.getenv("USE_GATEWAY_ORCHESTRATOR", "").lower() in ("true", "1", "yes"):
+        gateway_url = (os.getenv("GATEWAY_ORCHESTRATOR_URL") or "http://localhost:8010").rstrip("/")
+        return f"{gateway_url}/backend/v1"
     return (os.getenv("AI_BUILDER_BASE_URL") or "https://space.ai-builders.com/backend/v1").rstrip("/")
 
 def get_ai_client() -> openai.OpenAI:
-    """Get or create OpenAI client for AI Builder API"""
+    """
+    Get or create OpenAI client for AI Builder / gateway (LiteLLM).
+    Tries, in order: AI_BUILDER_TOKEN, MCP_GATEWAY_TOKEN, LITELLM_PROXY_KEY.
+    When gateway is used (USE_GATEWAY_ORCHESTRATOR=true), any of these tokens can be used.
+    """
     global client, ai_builder_token
     if client is None:
-        ai_builder_token = os.getenv("AI_BUILDER_TOKEN")
+        ai_builder_token = (
+            os.getenv("AI_BUILDER_TOKEN")
+            or os.getenv("MCP_GATEWAY_TOKEN")
+            or os.getenv("LITELLM_PROXY_KEY")
+        )
         if not ai_builder_token:
-            raise ValueError("AI_BUILDER_TOKEN environment variable is required. Please set it in your .env file.")
+            raise ValueError(
+                "No LLM token set. Set one of: AI_BUILDER_TOKEN, MCP_GATEWAY_TOKEN, LITELLM_PROXY_KEY in .env"
+            )
         client = openai.OpenAI(
             base_url=get_ai_builder_base_url(),
             api_key=ai_builder_token

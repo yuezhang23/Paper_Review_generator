@@ -17,13 +17,15 @@ from pydantic import BaseModel
 from summary_generator.main import build_paper_embeddings
 from vector_embedding.embeddings import embed_texts, VectorIndex, build_rag_index
 from vector_embedding.cache import get_content_based_cache_key
-from utils import file_storage, get_ai_client
+from utils import file_storage
 from .methodology_utils import SECTION_ANCHOR_QUERIES, DETAIL_SEEKING_QUERIES
-import logging
 
 # Import from image_optimizer
-from .image_optimizer import generate_and_save_image, rank_images_by_informativeness
-from .image_optimizer import criticize_image_with_queries
+from .image_optimizer import (
+    DEFAULT_VISION_MODEL as _DEFAULT_VISION_MODEL,
+    generate_and_save_image,
+    rank_images_by_informativeness,
+)
 # Import from three_layer_generator
 from .three_layer_generator import generate_from_file
 # Import prompt utilities
@@ -135,7 +137,7 @@ class ImageGenerationRequest(BaseModel):
     use_openreview: Optional[bool] = True  # Whether to use OpenReview for paper fetching
     pdf_path: Optional[str] = None  # PDF path to retrieve embeddings (backward compatibility)
     file_id: Optional[str] = None  # File ID to retrieve PDF path (backward compatibility)
-    model: Optional[str] = "gpt-image-1.5"  # Default to gpt-image-1.5 (AI Builder API default image model)
+    model: Optional[str] = None  # Image model; resolved from gateway config when using LangGraph (e.g. openai/gpt-image-1.5)
     size: Optional[str] = "1024x1024"  # Default size
     quality: Optional[str] = "auto"  # low, medium, high, or auto (AI Builder API supported values)
     figure_extraction_method: Optional[str] = "none"  # "none", "ocr", "multimodal"
@@ -315,10 +317,15 @@ def combine_and_validate_chunks(
     return retrieved_content
 
 
-async def generate_interpretation(ai_client, retrieved_content: str) -> str:
+# Default LLM for interpretation when not provided (must be in gateway model list: OpenAI, Gemini, or DeepSeek).
+DEFAULT_INTERPRETATION_MODEL = "gpt-4o-mini"
+
+
+async def generate_interpretation(ai_client, retrieved_content: str, model: Optional[str] = None) -> str:
     """
     Step 4: Generate step-by-step methodology interpretation via AI (3 runs),
     majority-vote on step count, and return the chosen interpretation_preview.
+    model: LLM model name (e.g. gpt-4o-mini, gemini/gemini-1.5-pro, deepseek/deepseek-chat). Uses DEFAULT_INTERPRETATION_MODEL if None.
     """
     prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")
     start_time = time.time()
@@ -346,11 +353,12 @@ async def generate_interpretation(ai_client, retrieved_content: str) -> str:
     interpretations = []
     interpretation_loop_start_time = time.time()
     
+    effective_model = model or DEFAULT_INTERPRETATION_MODEL
     # Helper function to generate a single interpretation
     async def generate_single_interpretation():
         interpretation_response = await asyncio.to_thread(
             ai_client.chat.completions.create,
-            model="supermind-agent-v1",
+            model=effective_model,
             messages=[
                 {"role": "system", "content": methodology_system_prompt},
                 {"role": "user", "content": methodology_user_prompt},
@@ -386,7 +394,18 @@ async def generate_interpretation(ai_client, retrieved_content: str) -> str:
     interpretation_loop_elapsed = time.time() - interpretation_loop_start_time
     logger.info(f"Interpretation loop (3 iterations) total took {interpretation_loop_elapsed:.2f} seconds")
 
-    step_counts = [interp[1] for interp in interpretations]
+    if not interpretations:
+        raise ValueError(
+            "All interpretation attempts failed (e.g. invalid model or API error). "
+            f"Check that the LLM gateway accepts the configured model (e.g. {effective_model}) or use a valid model name (gpt-4o-mini, gemini/gemini-1.5-pro, deepseek/deepseek-chat)."
+        )
+
+    step_counts = [interp[1] for interp in interpretations if len(interp) > 1]
+    if not step_counts:
+        raise ValueError(
+            "All interpretation attempts failed or returned invalid structure. "
+            f"Ensure the gateway model is valid (e.g. gpt-4o-mini, gemini/gemini-1.5-pro, deepseek/deepseek-chat)."
+        )
     most_common_step_count = max(set(step_counts), key=step_counts.count)
     chosen = [interp[0] for interp in interpretations if interp[1] == most_common_step_count][0]
     return chosen
@@ -417,58 +436,77 @@ def save_interpretation_and_create_request_dir(interpretation_preview: str) -> T
 
 
 async def generate_whiteboard_prompt(
-    interpretation_path: str, request_dir: str, ai_client=None
+    interpretation_path: str, request_dir: str, ai_client, model: Optional[str] = None
 ) -> str:
     """
     Step 6: Generate whiteboard diagram prompt (layer3_render) from interpretation file.
-    If ai_client is provided (e.g. from gateway config), use it; otherwise use get_ai_client().
+    ai_client must be provided by the caller (e.g. LangGraph from gateway config).
+    model: optional text model for layer generation; when None, three_layer_generator uses its default.
     """
     start_time = time.time()
     result = await generate_from_file(
-        interpretation_path, request_dir, ai_client=ai_client
+        interpretation_path, request_dir, ai_client=ai_client, model=model
     )
     elapsed_time = time.time() - start_time
     logger.info(f"generate_from_file took {elapsed_time:.2f} seconds")
     return result["layer3_render"]
 
 
-async def generate_image(
+# Fallback image model when caller does not pass one (e.g. non-gateway AI Builder path). Must match proxy model_list (e.g. openai/gpt-image-1.5) so /images/generations gets a valid image model, not a chat model like gpt-4o-mini.
+DEFAULT_IMAGE_MODEL = "openai/gpt-image-1.5"
+
+# Vision/chat model for image understanding (ranking, text extraction). Re-export from image_optimizer.
+DEFAULT_VISION_MODEL = _DEFAULT_VISION_MODEL
+
+
+def is_image_model(model_id: Optional[str]) -> bool:
+    """True if this model ID is valid for image generation (e.g. gpt-image-*, dall-e-*)."""
+    if not model_id or not isinstance(model_id, str):
+        return False
+    m = model_id.lower()
+    return "image" in m or m in ("dall-e-2", "dall-e-3")
+
+
+async def generate_images_only(
     ai_client,
     whiteboard_prompt: str,
     request_dir: str,
-    criticize_image: bool = True,
-) -> Tuple[bytes, str]:
+    model: Optional[str] = None,
+    max_retries: int = 5,
+) -> List[Dict[str, Any]]:
     """
-    Step 7: Generate and save image, run criticism loop, and optionally regenerate.
-    Returns (image_bytes, image_url).
+    Step 7a: Generate and save images. Uses image model for generation only.
+    model: image model ID (e.g. openai/gpt-image-1.5). When None, uses DEFAULT_IMAGE_MODEL.
+    Returns list of dicts with image_index, image_path, image_bytes, image_url.
     """
-    max_retries = 5
-    new_image_infos = []
-    image_bytes = None
-    image_url = None
-    image_path = None
+    effective_image_model = model or DEFAULT_IMAGE_MODEL
+    new_image_infos: List[Dict[str, Any]] = []
 
     for i in range(max_retries):
         try:
-            iter_start = time.time()
             image_result = await generate_and_save_image(
                 ai_client=ai_client,
                 whiteboard_prompt=whiteboard_prompt,
-                model="gpt-image-1.5",
+                model=effective_image_model,
                 request_dir=request_dir,
                 timeout_seconds=240,
             )
             image_path = os.path.join(request_dir, f"methodology_{i}.png")
             image_bytes = image_result.get("image_bytes")
             image_url = image_result.get("image_url")
-            
+
             if not image_bytes or not image_url:
                 logger.warning(f"Image generation {i+1} returned empty result, skipping")
                 continue
-                
+
             with open(image_path, "wb") as f:
-                new_image_infos.append({"image_index": i, "image_path": image_path, "image_bytes": image_bytes, "image_url": image_url})
                 f.write(image_bytes)
+            new_image_infos.append({
+                "image_index": i,
+                "image_path": image_path,
+                "image_bytes": image_bytes,
+                "image_url": image_url,
+            })
             logger.info(f"Image saved to: {image_path}")
         except Exception as e:
             logger.error(f"Failed to generate image {i+1}: {str(e)}")
@@ -479,43 +517,79 @@ async def generate_image(
             status_code=500,
             detail="Failed to generate any images after all retries"
         )
+    return new_image_infos
 
-    # Read ground truth render blueprint if available
+
+async def rank_and_select_best_image(
+    ai_client,
+    image_infos: List[Dict[str, Any]],
+    ground_truth_render_blueprint: str,
+    request_dir: str,
+    vision_model: Optional[str] = None,
+) -> Tuple[bytes, str]:
+    """
+    Step 7b: Rank images by informativeness and select the best. Uses vision/chat model
+    for image understanding (text extraction). Must be a model available on the gateway.
+    vision_model: model for vision tasks (e.g. gpt-4o-mini). When None, uses DEFAULT_VISION_MODEL.
+    Returns (image_bytes, image_url) of the best image.
+    """
+    effective_vision_model = vision_model or DEFAULT_VISION_MODEL
+    image_path_list = [c["image_path"] for c in image_infos]
+    try:
+        results = await rank_images_by_informativeness(
+            ai_client,
+            image_path_list,
+            ground_truth_render_blueprint,
+            request_dir,
+            vision_model=effective_vision_model,
+        )
+        if results and len(results) > 0:
+            best_index = results[0].get("image_index", 0)
+            if best_index >= len(image_infos):
+                logger.warning(f"Invalid image_index {best_index}, using first image")
+                best_index = 0
+            return image_infos[best_index]["image_bytes"], image_infos[best_index]["image_url"]
+    except Exception as e:
+        logger.warning(f"Failed to rank images: {str(e)}, using first image")
+    return image_infos[0]["image_bytes"], image_infos[0]["image_url"]
+
+
+async def generate_image(
+    ai_client,
+    whiteboard_prompt: str,
+    request_dir: str,
+    criticize_image: bool = True,
+    model: Optional[str] = None,
+    vision_model: Optional[str] = None,
+) -> Tuple[bytes, str]:
+    """
+    Step 7: Generate images, then rank and select the best.
+    model: image model ID (e.g. openai/gpt-image-1.5). When None, uses DEFAULT_IMAGE_MODEL.
+    vision_model: model for image understanding/ranking (e.g. gpt-4o-mini). When None, uses DEFAULT_VISION_MODEL.
+    Must be available on the gateway (e.g. via LangGraph config).
+    Returns (image_bytes, image_url).
+    """
+    image_infos = await generate_images_only(
+        ai_client=ai_client,
+        whiteboard_prompt=whiteboard_prompt,
+        request_dir=request_dir,
+        model=model,
+    )
     layer3_render_path = os.path.join(request_dir, "layer3_render.txt")
     ground_truth_render_blueprint = ""
     if os.path.exists(layer3_render_path):
         try:
-            with open(layer3_render_path, 'r', encoding='utf-8') as f:
+            with open(layer3_render_path, "r", encoding="utf-8") as f:
                 ground_truth_render_blueprint = f.read()
         except Exception as e:
             logger.warning(f"Failed to read layer3_render.txt: {str(e)}")
-    
-    # Rank the images by informativeness if we have ground truth
-    if ground_truth_render_blueprint:
-        try:
-            image_path_list = [c["image_path"] for c in new_image_infos]
-            results = await rank_images_by_informativeness(ai_client, image_path_list, ground_truth_render_blueprint, request_dir)
-            
-            # Ensure we have results and select the best image
-            if results and len(results) > 0:
-                best_index = results[0].get("image_index", 0)
-                if best_index >= len(new_image_infos):
-                    logger.warning(f"Invalid image_index {best_index}, using first image")
-                    best_index = 0
-                image_bytes = new_image_infos[best_index]["image_bytes"]
-                image_url = new_image_infos[best_index]["image_url"]
-            else:
-                logger.warning("No results from rank_images_by_informativeness, using first image")
-                image_bytes = new_image_infos[0]["image_bytes"]
-                image_url = new_image_infos[0]["image_url"]
-        except Exception as e:
-            logger.warning(f"Failed to rank images: {str(e)}, using first image")
-            image_bytes = new_image_infos[0]["image_bytes"]
-            image_url = new_image_infos[0]["image_url"]
-    else:
-        # No ground truth available, use first image
-        logger.info("No ground truth render blueprint available, using first image")
-        image_bytes = new_image_infos[0]["image_bytes"]
-        image_url = new_image_infos[0]["image_url"]
-    
-    return image_bytes, image_url
+
+    if ground_truth_render_blueprint and criticize_image:
+        return await rank_and_select_best_image(
+            ai_client=ai_client,
+            image_infos=image_infos,
+            ground_truth_render_blueprint=ground_truth_render_blueprint,
+            request_dir=request_dir,
+            vision_model=vision_model,
+        )
+    return image_infos[0]["image_bytes"], image_infos[0]["image_url"]

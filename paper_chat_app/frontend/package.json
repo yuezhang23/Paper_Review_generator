@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "clean": "rm -rf .next node_modules/.cache",
+    "predev": "rm -rf .next",
+    "dev": "next dev --turbo",
     "dev:turbo": "next dev --turbo",
     "dev:stable": "next build && next start",
     "build": "next build",

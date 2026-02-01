@@ -29,6 +29,12 @@ from .prompt_utils import load_prompt_template, format_prompt_template, fix_imam
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# GPT-5 family only supports temperature=1; others use 0.2 for stability
+def _temperature_for_model(model: str) -> float:
+    if model and "gpt-5" in model.lower():
+        return 1.0
+    return 0.2
+
 async def generate_step_image_component(ai_client, step_text: str, model: str, request_dir: str, timeout_seconds: int = 240) -> dict:
     prompt = f"""
     You are generating an 16:9 landscape academic infographic image. You MUST follow the provided Render Blueprint exactly.
@@ -339,7 +345,7 @@ async def criticize_image_with_render_text(ai_client, request_dir: str, image_pa
                 ai_client.chat.completions.create,
                 model="gemini-3-flash-preview",
                 messages=messages,
-                temperature=0.2,
+                temperature=_temperature_for_model("gemini-3-flash-preview"),
                 response_format={"type": "text"}
             )       
             result_content = response.choices[0].message.content
@@ -435,9 +441,9 @@ async def criticize_image_with_queries(ai_client, layer3_render_path: str, image
             # Run in thread pool for async execution
             response = await asyncio.to_thread(
                 ai_client.chat.completions.create,
-                model="supermind-agent-v1",
+                model="gpt-4o-mini",
                 messages=messages,
-                temperature=0.2,
+                temperature=_temperature_for_model("gpt-4o-mini"),
                 response_format={"type": "text"}
             )       
             result_content = response.choices[0].message.content
@@ -466,8 +472,18 @@ async def criticize_image_with_queries(ai_client, layer3_render_path: str, image
 
 
 
-async def extract_all_text_from_image(ai_client, image_path: str, max_retries: int = 3):
-    """Extract all text from an image using LLM with error handling and retries."""
+# Default vision/chat model for image understanding (e.g. text extraction). Must be in gateway model list (gpt-4o-mini, gemini/gemini-1.5-flash, etc.).
+DEFAULT_VISION_MODEL = "gpt-5"
+
+
+async def extract_all_text_from_image(
+    ai_client,
+    image_path: str,
+    model: str = DEFAULT_VISION_MODEL,
+    max_retries: int = 3,
+):
+    """Extract all text from an image using LLM with error handling and retries.
+    model: vision/chat model for image understanding (e.g. gpt-4o-mini). Must be available on the gateway."""
     with open(image_path, "rb") as image_file:
         image_bytes = image_file.read()
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -502,9 +518,9 @@ async def extract_all_text_from_image(ai_client, image_path: str, max_retries: i
         try:
             response = await asyncio.to_thread(
                 ai_client.chat.completions.create,
-                model="gemini-3-flash-preview",
+                model=model,
                 messages=messages,
-                temperature=0.2,
+                temperature=_temperature_for_model(model),
                 response_format={"type": "json_object"}
             )
             
@@ -536,16 +552,41 @@ async def extract_all_text_from_image(ai_client, image_path: str, max_retries: i
                 extracted_text = json.loads(result_content)
                 # print(extracted_text)
 
+                def _to_str_list(val):
+                    """Flatten and ensure all items are strings (hashable for Counter)."""
+                    if val is None:
+                        return []
+                    if isinstance(val, str):
+                        return [val] if val.strip() else []
+                    if isinstance(val, list):
+                        out = []
+                        for x in val:
+                            out.extend(_to_str_list(x))
+                        return [s for s in out if isinstance(s, str) and s.strip()]
+                    if isinstance(val, dict) and "text" in val:
+                        return _to_str_list(val["text"])
+                    return [str(val)] if val else []
+
                 if isinstance(extracted_text, list):
-                    return [text.get("text", "") for text in extracted_text if isinstance(text, dict) and "text" in text]
+                    result = []
+                    for text in extracted_text:
+                        if isinstance(text, dict) and "text" in text:
+                            result.extend(_to_str_list(text["text"]))
+                        elif isinstance(text, str):
+                            result.append(text)
+                    return result
                 elif isinstance(extracted_text, dict):
-                    # Handle case where JSON is wrapped in an object
                     if "text" in extracted_text:
-                        return [extracted_text["text"]]
-                    # Try to find a list of texts
+                        return _to_str_list(extracted_text["text"])
                     for key in extracted_text:
                         if isinstance(extracted_text[key], list):
-                            return [item.get("text", "") if isinstance(item, dict) else str(item) for item in extracted_text[key]]
+                            result = []
+                            for item in extracted_text[key]:
+                                if isinstance(item, dict) and "text" in item:
+                                    result.extend(_to_str_list(item["text"]))
+                                else:
+                                    result.extend(_to_str_list(item))
+                            return result if result else []
                 logger.warning(f"Unexpected JSON format from LLM: {type(extracted_text)}")
                 return None
             except json.JSONDecodeError as e:
@@ -567,6 +608,9 @@ from collections import Counter
 import string
 
 def compare_all_text_with_ground_truth(all_text: List[str], ground_truth: str):
+    # Ensure all_text contains only hashable strings (Counter fails on lists)
+    all_text = [str(t).strip() for t in all_text if t is not None and not isinstance(t, (list, dict))]
+    all_text = [t for t in all_text if t]
     # find all the text existing in both all_text and in ground_truth_render_blueprint, count the length of the text
     all_txt_len = len(ground_truth)
     # remove text included in ()
@@ -604,11 +648,16 @@ def compare_all_text_with_ground_truth(all_text: List[str], ground_truth: str):
     return matched_text_length, new_text_length, is_duplicate, matched_text
 
 async def rank_images_by_informativeness(
-    ai_client, image_path_list: List[str], ground_truth_render_blueprint: str, request_path: str
+    ai_client,
+    image_path_list: List[str],
+    ground_truth_render_blueprint: str,
+    request_path: str,
+    vision_model: str = DEFAULT_VISION_MODEL,
 ):
-    """Run all LLM extractions in parallel, then score and rank."""
+    """Run all LLM extractions in parallel, then score and rank.
+    vision_model: model for image understanding (e.g. gpt-4o-mini). Must be available on the gateway."""
     extraction_tasks = [
-        extract_all_text_from_image(ai_client, path) for path in image_path_list
+        extract_all_text_from_image(ai_client, path, model=vision_model) for path in image_path_list
     ]
     all_results = await asyncio.gather(*extraction_tasks, return_exceptions=False)
 
