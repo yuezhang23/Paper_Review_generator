@@ -1,4 +1,4 @@
-# AI Paper Reviewer
+# Paper Analytics Tool (Agentic)
 
 An intelligent paper review system that integrates with OpenReview through a Model Context Protocol (MCP) server. This project provides tools to search, retrieve, and analyze academic papers from OpenReview, with a focus on ICLR and other major conferences.
 
