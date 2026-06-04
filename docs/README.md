@@ -1,5 +1,5 @@
 # Multi-modal Document-to-Infographic Generation (Agentic)
-
+An agentic AI platform that helps users analyze, summarize, and visualize academic papers. By combining retrieval-augmented generation (RAG), and multimodal AI workflows, the system can search research papers, generate concise summaries, answer paper-specific questions, and create visual representations of complex methodologies. The platform aims to make scientific literature more accessible and easier to understand through AI-powered research assistance.
 ## Features
 
 - **OpenReview MCP Server**: A Model Context Protocol server that wraps the OpenReview Python SDK
